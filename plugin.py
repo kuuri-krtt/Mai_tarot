@@ -693,7 +693,7 @@ class TarotsPlugin(BasePlugin):
 
     plugin_description = "塔罗牌占卜插件，支持多种牌阵和卡牌类型，提供简短自然解读"
     plugin_version = "2.2.1"
-    plugin_author = "升级版 - 简短解读"
+    plugin_author = "KArabella"
 
     config_section_descriptions = {
         "plugin": "插件基本配置",
