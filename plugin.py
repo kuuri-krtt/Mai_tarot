@@ -511,7 +511,7 @@ class TarotsAction(BaseAction):
             per_card_instruction = ""
         else:
             card_count = formation_info.count("张牌")
-            length_limit = f"每张牌1-1.5句，句子内容要简洁明了,总共不超过{card_count * 45}字"
+            length_limit = f"每张牌1-1.5句，句子内容要简洁明了,所有解牌内容总共不超过{card_count * 30}字"
             per_card_instruction = "请为每张牌分别提供简短解读，整体保持连贯。"
         
         prompt = f"""请为{user_query}的塔罗牌占卜提供简短解读。
@@ -565,7 +565,7 @@ class TarotsAction(BaseAction):
             }
             
             card_count = formation_card_count.get(formation_name, 3)  # 默认3张
-            max_chars = card_count * 85  # 每张牌40字，比提示词要求更宽松
+            max_chars = card_count * 85  # 每张牌85字，比提示词要求更宽松
             
             if len(text) > max_chars:
                 # 在标点处优雅截断
@@ -662,7 +662,7 @@ class TarotsAction(BaseAction):
 
 @register_plugin
 class TarotsPlugin(BasePlugin):
-    """塔罗牌插件 - 按原始版本逻辑"""
+    """塔罗牌插件"""
     
     plugin_name = "tarots_plugin"
     enable_plugin = True
@@ -670,9 +670,9 @@ class TarotsPlugin(BasePlugin):
     dependencies = []
     python_dependencies = []
 
-    plugin_description = "塔罗牌占卜插件，按原始版本逻辑：先检测牌阵，再检测范围"
+    plugin_description = "提供高版本塔罗牌占卜功能，牌面为BiliBili幻星集"
     plugin_version = "4.1.0"
-    plugin_author = "原始版本逻辑重构"
+    plugin_author = "KArabella"
 
     config_section_descriptions = {
         "plugin": "插件基本配置",
