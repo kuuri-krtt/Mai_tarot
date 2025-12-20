@@ -177,12 +177,20 @@ class TarotsAction(BaseAction):
                 await self.send_text("❌ 卡牌图片发送失败，无法进行占卜")
                 return False, "图片发送失败"
 
-            # 2. 生成并发送简短文字解读
+            # 2. 获取聊天上下文 - 从action_reasoning中提取
+            chat_context = self._get_chat_context_from_reasoning()
+            logger.info(f"聊天上下文: {chat_context}")
+            
+            # 3. 生成并发送简短文字解读
             await asyncio.sleep(1)  # 给用户一点时间看图片
             
             try:
-                short_interpretation = await self._generate_short_interpretation(card_details, formation_name, target_user)
-                await self.send_text(short_interpretation)
+                short_interpretation = await self._generate_short_interpretation(
+                    card_details, formation_name, target_user, chat_context
+                )
+                # 清理文本，移除空行和多余换行
+                cleaned_interpretation = self._clean_text(short_interpretation)
+                await self.send_text(cleaned_interpretation)
                     
             except Exception as e:
                 logger.error(f"解读生成失败: {e}")
@@ -200,11 +208,97 @@ class TarotsAction(BaseAction):
             await self.send_text(f"❌ 占卜失败: {str(e)}")
             return False, "执行错误"
 
-    async def _generate_short_interpretation(self, card_details: List[Dict], formation_name: str, user_nickname: str) -> str:
-        """生成简短自然的解读"""
+    def _get_chat_context_from_reasoning(self) -> Dict[str, Any]:
+        """从action_reasoning中提取上下文信息"""
+        try:
+            context_info = {
+                "has_context": False,
+                "topic": "",
+                "intent": "",
+                "related_messages": []
+            }
+            
+            # 获取action_reasoning
+            if not hasattr(self, 'action_reasoning'):
+                logger.warning("没有action_reasoning属性")
+                return context_info
+            
+            reasoning_text = getattr(self, 'action_reasoning', '')
+            if not reasoning_text or not isinstance(reasoning_text, str):
+                logger.warning(f"action_reasoning无效: {reasoning_text}")
+                return context_info
+            
+            logger.info(f"action_reasoning: {reasoning_text}")
+            
+            # 从reasoning中提取关键词
+            reasoning_lower = reasoning_text.lower()
+            
+            # 关键词映射 - 更全面的关键词
+            fortune_keywords = {
+                "财运": ["财运", "金钱", "投资", "赚钱", "财富", "收入", "经济", "财务", "财政", "钱", "发财", "富贵", "富裕"],
+                "爱情": ["爱情", "桃花", "感情", "恋爱", "喜欢", "爱人", "姻缘", "伴侣", "婚姻", "心动", "脱单", "喜欢的人", "恋爱运", "感情运"],
+                "事业": ["事业", "工作", "职业", "职场", "升职", "跳槽", "项目", "事业运", "工作运", "职业发展", "工作发展", "事业发展", "事业", "工作", "职场运"],
+                "学业": ["学业", "考试", "学习", "成绩", "考试运", "学习运", "功课", "读书", "考试", "复习", "考试成绩", "学习考试", "学业运", "学习", "考试"],
+                "健康": ["健康", "身体", "生病", "熬夜", "锻炼", "养生", "健康运", "身体", "健康", "养生", "身体状况", "健康", "身体运"],
+                "感情": ["感情", "情感", "关系", "相处", "分手", "复合", "恋爱", "情感", "感情关系", "感情运", "情感运"]
+            }
+            
+            # 检查reasoning中是否包含关键词
+            found_intent = ""
+            found_keyword = ""
+            
+            for intent, keywords in fortune_keywords.items():
+                for keyword in keywords:
+                    if keyword in reasoning_lower:
+                        found_intent = intent
+                        found_keyword = keyword
+                        logger.info(f"从action_reasoning检测到意图: {found_intent}, 关键词: {found_keyword}")
+                        break
+                if found_intent:
+                    break
+            
+            if found_intent:
+                context_info["has_context"] = True
+                context_info["intent"] = found_intent
+                context_info["topic"] = f"{found_intent}相关"
+                context_info["related_messages"].append(f"用户关心：{found_intent}")
+            else:
+                # 如果没有明确意图，检查是否提到占卜
+                if "占卜" in reasoning_lower or "运势" in reasoning_lower or "运气" in reasoning_lower:
+                    context_info["has_context"] = True
+                    context_info["topic"] = "运势占卜"
+                    logger.info("检测到通用占卜请求")
+                else:
+                    logger.info("未检测到特定意图")
+            
+            return context_info
+            
+        except Exception as e:
+            logger.warning(f"从action_reasoning提取上下文失败: {e}")
+            return {"has_context": False, "topic": "", "intent": "", "related_messages": []}
+
+    def _clean_text(self, text: str) -> str:
+        """清理文本，移除空行和多余换行"""
+        if not text:
+            return ""
+        
+        # 分割成行
+        lines = text.split('\n')
+        # 过滤掉空行和只有空格的行
+        cleaned_lines = []
+        for line in lines:
+            stripped_line = line.strip()
+            if stripped_line:  # 如果不是空行
+                cleaned_lines.append(stripped_line)
+        
+        # 重新组合成单行文本，用空格分隔
+        return ' '.join(cleaned_lines)
+
+    async def _generate_short_interpretation(self, card_details: List[Dict], formation_name: str, user_nickname: str, chat_context: Dict) -> str:
+        """生成简短自然的解读（结合上下文）"""
         try:
             # 使用AI生成简短解读
-            prompt = self._build_short_prompt(card_details, formation_name, user_nickname)
+            prompt = self._build_ultra_short_prompt(card_details, formation_name, user_nickname, chat_context)
             
             models = llm_api.get_available_models()
             chat_model_config = models.get("replyer")
@@ -213,37 +307,64 @@ class TarotsAction(BaseAction):
                 prompt, model_config=chat_model_config, request_type="tarots_interpretation"
             )
 
-            if success and len(thinking_result) < 100:  # 确保回复简短
-                return thinking_result
+            if success and thinking_result:
+                # 清理回复，确保简短且无空行
+                clean_result = self._clean_text(thinking_result.strip())
+                # 严格控制长度在80字以内
+                if len(clean_result) > 80:
+                    clean_result = clean_result[:80]
+                logger.info(f"AI生成解读: {clean_result}")
+                return clean_result
             else:
-                # 如果AI回复太长或失败，使用备用简短解读
-                return self._generate_fallback_short_interpretation(card_details, formation_name, user_nickname)
+                # 如果AI回复失败，使用备用简短解读
+                fallback_result = self._generate_fallback_ultra_short_interpretation(card_details, formation_name, user_nickname, chat_context)
+                logger.info(f"使用备用解读: {fallback_result}")
+                return fallback_result
                 
         except Exception as e:
             logger.error(f"AI解读生成错误: {e}")
-            return self._generate_fallback_short_interpretation(card_details, formation_name, user_nickname)
+            fallback_result = self._generate_fallback_ultra_short_interpretation(card_details, formation_name, user_nickname, chat_context)
+            logger.info(f"出错后使用备用解读: {fallback_result}")
+            return fallback_result
 
-    def _build_short_prompt(self, card_details: List[Dict], formation_name: str, user_nickname: str) -> str:
-        """构建简短解读提示词"""
-        cards_info = ""
+    def _build_ultra_short_prompt(self, card_details: List[Dict], formation_name: str, user_nickname: str, chat_context: Dict) -> str:
+        """构建超简短解读提示词（控制在80字内）"""
+        # 构建卡牌信息
+        cards_info = []
         for card in card_details:
             status = "逆位" if card['is_reverse'] else "正位"
-            cards_info += f"{card['name']}（{status}）"
+            cards_info.append(f"{card['name']}（{status}）")
+        
+        cards_str = "、".join(cards_info)
 
-        prompt = f"""请用轻松自然的语气为{user_nickname}解读塔罗牌，保持非常简短（2-3句话）。
+        # 基础提示词
+        prompt_parts = []
+        prompt_parts.append(f"请为{user_nickname}的塔罗牌做超简短解读（最多80字）。")
+        prompt_parts.append(f"抽到的牌：{cards_str}")
+        prompt_parts.append(f"牌阵：{formation_name}")
 
-抽到的牌：{cards_info}
+        # 添加上下文信息（如果有的话）
+        if chat_context.get("has_context", False):
+            if chat_context.get("intent"):
+                intent = chat_context["intent"]
+                prompt_parts.append(f"用户想了解{intent}运势，请将解读重点放在{intent}方面，给出相关的建议。")
+                logger.info(f"提示词中包含意图: {intent}")
+            else:
+                prompt_parts.append(f"用户进行运势占卜，请给出温暖鼓励的解读。")
+                logger.info(f"提示词中包含通用占卜意图")
+        else:
+            logger.info("提示词中无特定意图")
+        
+        prompt_parts.append("要求：用1-2句话解读，像朋友聊天一样自然温暖。不要用专业术语，不要分段，不要空行。")
+        prompt_parts.append("示例：'牌面显示事业运不错～工作上有新机会，主动把握会有好进展哦！'")
+        prompt_parts.append("你的解读：")
 
-请用1句话总结牌面意思，再用1句话给出实用建议。
-就像朋友聊天一样自然，不要用专业术语，不要讲大道理。
-可以带点小幽默，保持温暖亲切。
+        full_prompt = "\n".join(prompt_parts)
+        logger.info(f"生成的提示词: {full_prompt[:200]}...")
+        return full_prompt
 
-你的解读（请控制在50字以内）："""
-
-        return prompt
-
-    def _generate_fallback_short_interpretation(self, card_details: List[Dict], formation_name: str, user_nickname: str) -> str:
-        """生成备用简短解读"""
+    def _generate_fallback_ultra_short_interpretation(self, card_details: List[Dict], formation_name: str, user_nickname: str, chat_context: Dict) -> str:
+        """生成备用超简短解读"""
         card_names = []
         reverse_count = 0
         
@@ -255,30 +376,68 @@ class TarotsAction(BaseAction):
     
         card_list = "、".join(card_names)
         
-        # 根据逆位牌数量给出不同语气
-        if reverse_count == len(card_details):
+        logger.info(f"生成备用解读: intent={chat_context.get('intent', '无')}, reverse_count={reverse_count}")
+        
+        # 如果有上下文意图，添加相关解读
+        if chat_context.get("has_context", False) and chat_context.get("intent"):
+            intent = chat_context["intent"]
+            
+            if intent == "爱情":
+                interpretations = [
+                    f"💖 {user_nickname}抽到{card_list}～感情方面需要多用心经营哦！",
+                    f"❤️ {card_list}为你揭示感情～最近多关注彼此感受会有惊喜！",
+                    f"🌹 {user_nickname}的感情牌是{card_list}～用心沟通感情会更甜蜜！"
+                ]
+            elif intent == "财运":
+                interpretations = [
+                    f"💰 {user_nickname}抽到{card_list}～财运方面需要谨慎决策哦！",
+                    f"💵 {card_list}为你揭示财运～稳扎稳打会有好收获！",
+                    f"📈 {user_nickname}的财运牌是{card_list}～理性投资会有回报！"
+                ]
+            elif intent == "事业":
+                interpretations = [
+                    f"💼 {user_nickname}抽到{card_list}～事业方面需要多些耐心！",
+                    f"📋 {card_list}为你揭示事业～踏实工作会有进步！",
+                    f"🚀 {user_nickname}的事业牌是{card_list}～专注目标会有突破！"
+                ]
+            elif intent == "学业":
+                interpretations = [
+                    f"📚 {user_nickname}抽到{card_list}～学习方面需要更多专注！",
+                    f"✏️ {card_list}为你揭示学业～认真复习会有好成绩！",
+                    f"🎓 {user_nickname}的学业牌是{card_list}～坚持努力会有收获！"
+                ]
+            else:
+                # 其他意图使用通用解读
+                interpretations = self._get_general_interpretations(card_list, user_nickname, reverse_count, len(card_details))
+        else:
+            # 没有上下文意图，使用通用解读
+            interpretations = self._get_general_interpretations(card_list, user_nickname, reverse_count, len(card_details))
+        
+        return random.choice(interpretations)
+
+    def _get_general_interpretations(self, card_list: str, user_nickname: str, reverse_count: int, total_cards: int) -> List[str]:
+        """获取通用解读"""
+        if reverse_count == total_cards:
             # 全是逆位
-            interpretations = [
-                f"🌙 哇{user_nickname}，抽到了{card_list}～看来最近需要放慢脚步调整一下呢！",
-                f"🌀 {user_nickname}的牌面是{card_list}～能量有点特别，给自己多点耐心哦！",
-                f"💫 抽到{card_list}呢{user_nickname}～最近可能有些小挑战，但都是成长的机会！"
+            return [
+                f"🌙 {user_nickname}抽到{card_list}～需要放慢脚步调整一下呢！",
+                f"🌀 牌面是{card_list}～给自己多点耐心调整状态哦！",
+                f"💫 {card_list}显示需要稍作休整～放松心情会有新发现！"
             ]
         elif reverse_count > 0:
             # 有逆位牌
-            interpretations = [
-                f"✨ {user_nickname}抽到了{card_list}～牌面有些小波动，不过问题不大！",
-                f"🌟 为{user_nickname}抽到{card_list}～有些地方可能需要微调，但整体还不错！",
-                f"🔮 {user_nickname}的塔罗牌是{card_list}～能量有起有伏，保持平常心就好～"
+            return [
+                f"✨ {user_nickname}抽到{card_list}～牌面有些小波动但问题不大！",
+                f"🌟 {card_list}显示需要微调～保持平常心就好！",
+                f"🔮 塔罗牌{card_list}～能量有起有伏是正常的！"
             ]
         else:
             # 全是正位
-            interpretations = [
-                f"💖 {user_nickname}抽到了{card_list}～牌面能量超棒，继续保持！",
-                f"⭐ 哇{user_nickname}，{card_list}～都是正位呢，最近运势不错哦！",
-                f"🌞 {user_nickname}的塔罗牌是{card_list}～能量很正向，放心前进吧！"
+            return [
+                f"💖 {user_nickname}抽到{card_list}～牌面能量很棒继续保持！",
+                f"⭐ {card_list}都是正位呢～最近运势不错哦！",
+                f"🌞 塔罗牌{card_list}～能量很正向放心前进吧！"
             ]
-        
-        return random.choice(interpretations)
 
     def _map_card_type(self, card_type: str) -> str:
         """映射卡牌类型参数"""
@@ -422,8 +581,8 @@ class TarotsAction(BaseAction):
                     "use_cards": config_data.get("cards", {}).get("use_cards", ['bilibili','east'])
                 },
                 "adjustment": {
-                    "enable_original_text": config_data.get("adjustment", {}).get("enable_original_text", False),
-                    "ai_interpretation": config_data.get("adjustment", {}).get("ai_interpretation", True)
+                    "enable_original_text": False,
+                    "ai_interpretation": True
                 }
             }
             return config
