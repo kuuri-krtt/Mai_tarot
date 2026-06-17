@@ -34,7 +34,7 @@
 
 推荐通过 MaiBot 插件市场安装并启用本插件。插件市场会负责下载插件包并放置到正确目录，启用后可在 WebUI 中调整配置。
 
-如果需要手动安装，可以将本仓库目录放入 MaiBot 的 `plugins/mai_tarot` 目录下，目录内应直接包含 `plugin.py`、`_manifest.json`、`config.toml` 和 `tarot_jsons`。放置完成后重启 MaiBot，或按当前运行环境支持的方式重新加载插件。
+如果需要手动安装，可以将本仓库目录放入 MaiBot 的 `plugins/Mai_tarots` 目录下，目录内应直接包含 `plugin.py`、`_manifest.json`、`config.toml` 和 `tarot_jsons`。放置完成后重启 MaiBot，或按当前运行环境支持的方式重新加载插件。
 
 启用后建议先确认以下配置：
 
@@ -185,7 +185,7 @@ tarot_jsons/
 
 - [A0000Xz/MaiBot-Tarots-Plugin](https://github.com/A0000Xz/MaiBot-Tarots-Plugin) 是更早的原版实现，提供了 MaiBot 塔罗插件的主要玩法、牌组解耦思路、牌阵与抽牌范围设计，并在 README 中说明其参考了 FloatTech / ZeroBot 相关塔罗插件与数据资源。
 - [Kristen23557/MaiBot-Tarots-Plugin-REBORN](https://github.com/Kristen23557/MaiBot-Tarots-Plugin-REBORN/) 是 GitHub 上从 A0000Xz 仓库 fork 出来的复活版，目标是让原版插件继续适配更高版本的麦麦，并转向本地牌组使用方式。
-- 当前 `kuuri-krtt.mai_tarot` 版本是在 REBORN 方向上的进一步整理：面向 MaiBot 1.0.5 与 maibot-plugin-sdk v2 重写触发链路、配置模型、AI 输出和本地牌组加载逻辑。
+- 当前 `kuuri-krtt.mai_tarots` 版本是在 REBORN 方向上的进一步整理：面向 MaiBot 1.0.5 与 maibot-plugin-sdk v2 重写触发链路、配置模型、AI 输出和本地牌组加载逻辑。
 
 感谢 A0000Xz、Kristen23557 / KArabella，以及更早提供思路和资源基础的相关开源项目维护者。若上游作者或素材权利方认为当前说明存在不准确之处，请通过仓库 issue 联系修正。
 
