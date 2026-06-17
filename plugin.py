@@ -12,9 +12,6 @@ import json
 import random
 import re
 
-from src.config.config import global_config
-
-
 PLUGIN_DIR = Path(__file__).parent
 TAROT_DIR = PLUGIN_DIR / "tarot_jsons"
 QQ_ID_PATTERN = re.compile(r"^\d{5,}$")
@@ -416,23 +413,16 @@ class TarotRuntime:
 
     @staticmethod
     def _build_bot_style_context() -> str:
-        """构建与主程序一致的对外发言风格要求。"""
+        """构建插件内置的对外发言风格要求。"""
 
-        bot_name = global_config.bot.nickname.strip()
-        alias_names = [alias.strip() for alias in global_config.bot.alias_names if alias.strip()]
-        bot_aliases = f"，也有人叫你{','.join(alias_names)}" if alias_names else ""
-        personality = global_config.personality.personality.strip() or "是人类。"
-        reply_style = global_config.personality.reply_style.strip()
-
-        style_lines = [
-            "【麦麦发言设定】",
-            f"你正在代替{bot_name or '麦麦'}对外发言，名字是{bot_name or '麦麦'}{bot_aliases}。",
-            f"人设：{personality}",
-        ]
-        if reply_style:
-            style_lines.append(f"表达风格：{reply_style}")
-            style_lines.append("上面的表达风格是硬性要求，所有对外发送的句子都必须自然体现。")
-        return "\n".join(style_lines)
+        return "\n".join(
+            [
+                "【塔罗回复风格】",
+                "你正在作为麦麦塔罗插件生成对外发送的文本。",
+                "请使用简体中文，语气自然、简短、温和，不要自称专业占卜师。",
+                "不要编造没有抽到的牌面，也不要输出与本次塔罗结果无关的内容。",
+            ]
+        )
 
     async def _build_preface(self, user: str, card_type: str, formation: str, user_request: str) -> str:
         cfg = self.plugin.config.adjustment
