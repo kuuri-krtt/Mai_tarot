@@ -1,8 +1,9 @@
 # 麦麦塔罗
 
 面向 MaiBot / MaiCore 新版插件系统的本地塔罗占卜插件。插件会从本地牌组中真实抽牌，发送牌面图片、牌名和简短解读，并尽量避免普通回复链路直接编造牌面。
+以Kristen23557的版本为原本进行开发。
 
-当前版本主要围绕 MaiBot 1.0.5 与 maibot-plugin-sdk v2 进行适配。默认牌组为 `classic`；默认不再附带 bilibili幻星集 卡组。
+当前版本主要围绕 MaiBot 1.0.5 与 maibot-plugin-sdk v2 进行适配。默认牌组为 `classic`；不附带 bilibili幻星集 卡组。
 
 ## 功能特点
 
