@@ -1,704 +1,1231 @@
-from typing import List, Tuple, Type, Any, Dict, Optional
-import random
-import asyncio
-import json
-import base64
-import toml
-import traceback
+from __future__ import annotations
+
 from pathlib import Path
-import os
+from typing import Any, ClassVar
 
-# 导入插件系统
-from src.plugin_system import BasePlugin, register_plugin, ComponentInfo
-from src.plugin_system import BaseAction, ActionActivationType
-from src.plugin_system import ConfigField
-from src.plugin_system.apis import llm_api
-from src.common.logger import get_logger
+from maibot_sdk import Action, Command, EventHandler, Field, HookHandler, MaiBotPlugin, PluginConfigBase
+from maibot_sdk.types import ActivationType, ErrorPolicy, EventType, HookMode, HookOrder
 
-logger = get_logger("tarots")
+import asyncio
+import base64
+import json
+import random
+import re
 
-class TarotsAction(BaseAction):
-    """塔罗牌占卜动作 - 按原始版本逻辑重构"""
-    
-    # === Action配置 ===
-    action_name = "tarots_draw_action"
-    
-    # 激活配置
-    activation_type = ActionActivationType.KEYWORD
-    activation_keywords = ["塔罗牌", "抽塔罗", "占卜", "算卦", "抽张塔罗牌", "抽塔罗牌"]
-    keyword_case_sensitive = False
-    activation_require_all = False
+from src.config.config import global_config
 
-    # 动作描述
-    action_description = "为用户抽取塔罗牌并进行LLM解读"
-    action_parameters = {
-        "user_query": "用户的原始问题和请求"
-    }
-    action_require = ["用户要求抽取塔罗牌时", "用户要进行占卜时", "用户想算一卦时"]
-    associated_types = ["text"]
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.base_dir = Path(__file__).parent.absolute()
-        self.using_cards = self._load_card_setting()
+PLUGIN_DIR = Path(__file__).parent
+TAROT_DIR = PLUGIN_DIR / "tarot_jsons"
+QQ_ID_PATTERN = re.compile(r"^\d{5,}$")
+TAROT_REQUEST_PATTERN = re.compile(
+    r"(占卜一下|帮.*?占卜|给.*?占卜|为.*?占卜|塔罗占卜|塔罗一下|塔罗.*?看看|用塔罗.*?看|抽.*?牌|算一卦|算卦|测一测|测测|问牌)"
+)
+TAROT_TOPIC_PATTERN = re.compile(r"(塔罗|占卜|牌面).{0,20}(能不能|可不可以|会不会|是否|还能|今年|未来|最近|吗|嘛)")
+TAROT_KNOWLEDGE_PATTERN = re.compile(r"(是什么|什么意思|含义|牌义|有哪些|说明|介绍|教程|怎么解读|代表什么)")
+LOOSE_REQUEST_PATTERN = re.compile(r"(帮.*?看看|帮.*?看|看一下|看看|算算|算一下|测一下|测测)")
+LOOSE_TOPIC_PATTERN = re.compile(r"(能不能|可不可以|会不会|是否|还能|今年|未来|最近|今晚|明天|感情|恋爱|工作|运势|结果|发展|有戏|机会|吗|嘛)")
+NATURAL_TRIGGER_MODES = ("严格", "平衡", "宽松")
+
+
+def scan_available_card_sets() -> list[str]:
+    """扫描本地可用牌组目录。"""
+
+    if not TAROT_DIR.exists():
+        return []
+    return sorted(
+        item.name
+        for item in TAROT_DIR.iterdir()
+        if item.is_dir() and (item / "tarots.json").exists()
+    )
+
+
+def get_default_card_set() -> str:
+    """优先使用 classic，否则使用第一个本地可用牌组。"""
+
+    available_card_sets = scan_available_card_sets()
+    if "classic" in available_card_sets:
+        return "classic"
+    return available_card_sets[0] if available_card_sets else ""
+
+
+CARD_TYPE_ALIASES = {
+    "全": "全部",
+    "全部": "全部",
+    "阿卡纳": "全部",
+    "阿卡那": "全部",
+    "阿尔卡纳": "全部",
+    "阿尔卡那": "全部",
+    "阿尔克那": "全部",
+    "大": "大阿卡纳",
+    "大阿": "大阿卡纳",
+    "大阿卡纳": "大阿卡纳",
+    "大阿卡那": "大阿卡纳",
+    "大牌": "大阿卡纳",
+    "小": "小阿卡纳",
+    "小阿": "小阿卡纳",
+    "小阿卡纳": "小阿卡纳",
+    "小阿卡那": "小阿卡纳",
+    "小牌": "小阿卡纳",
+}
+FORMATION_ALIASES = {
+    "单": "单张",
+    "单张": "单张",
+    "一张": "单张",
+    "圣": "圣三角",
+    "圣三角": "圣三角",
+    "三角": "圣三角",
+    "时间": "时间之流",
+    "时间之流": "时间之流",
+    "四": "四要素",
+    "四要素": "四要素",
+    "四元素": "四要素",
+    "五": "五牌阵",
+    "五牌": "五牌阵",
+    "五牌阵": "五牌阵",
+    "吉": "吉普赛十字",
+    "吉普赛": "吉普赛十字",
+    "吉普赛十字": "吉普赛十字",
+    "马": "马蹄",
+    "马蹄": "马蹄",
+    "六": "六芒星",
+    "六芒": "六芒星",
+    "六芒星": "六芒星",
+}
+NUMBER_NAME_MAP = {
+    "ACE": "王牌",
+    "10": "十",
+    "2": "二",
+    "3": "三",
+    "4": "四",
+    "5": "五",
+    "6": "六",
+    "7": "七",
+    "8": "八",
+    "9": "九",
+}
+CARD_NAME_ALIASES = {
+    "皇后": "女皇",
+    "隐士": "隐者",
+    "星辰": "星星",
+    "王后": "皇后",
+}
+
+
+class PluginSectionConfig(PluginConfigBase):
+    """插件基础配置。"""
+
+    __ui_label__: ClassVar[str] = "插件"
+    __ui_icon__: ClassVar[str] = "package"
+    __ui_order__: ClassVar[int] = 0
+
+    config_version: str = Field(
+        default="1.2.0",
+        description="配置版本号",
+        json_schema_extra={"label": "配置版本", "disabled": True, "hidden": True, "input_type": "text"},
+    )
+    enabled: bool = Field(default=True, description="是否启用塔罗插件", json_schema_extra={"label": "启用插件"})
+
+
+class ComponentConfig(PluginConfigBase):
+    """组件启用配置。"""
+
+    __ui_label__: ClassVar[str] = "组件"
+    __ui_icon__: ClassVar[str] = "puzzle"
+    __ui_order__: ClassVar[int] = 1
+
+    enable_tarots: bool = Field(
+        default=True,
+        description="开启后会拦截自然语言塔罗请求；未命中拦截时也允许 planner 调用塔罗兜底",
+        json_schema_extra={"label": "自然语言触发"},
+    )
+    enable_tarots_command: bool = Field(
+        default=True,
+        description="开启后可使用 /塔罗、/tarot 或 /tarots 命令手动触发",
+        json_schema_extra={"label": "启用 /塔罗 命令"},
+    )
+    natural_trigger_mode: str = Field(
+        default="平衡",
+        description="严格只拦截明确塔罗/占卜请求；平衡兼顾常见自然语言；宽松会尝试拦截更多看看/算算类请求",
+        json_schema_extra={"label": "自然语言触发模式", "x-widget": "select"},
+    )
+
+
+class CardConfig(PluginConfigBase):
+    """牌组配置。"""
+
+    __ui_label__: ClassVar[str] = "牌组"
+    __ui_icon__: ClassVar[str] = "gallery-vertical"
+    __ui_order__: ClassVar[int] = 2
+
+    using_cards: str = Field(
+        default_factory=get_default_card_set,
+        description="当前使用的牌组目录名，只能选择 tarot_jsons 下包含 tarots.json 的本地牌组",
+        json_schema_extra={"label": "当前牌组", "x-widget": "select"},
+    )
+
+
+class AdjustmentConfig(PluginConfigBase):
+    """占卜输出配置。"""
+
+    __ui_label__: ClassVar[str] = "输出"
+    __ui_icon__: ClassVar[str] = "settings-2"
+    __ui_order__: ClassVar[int] = 3
+
+    send_card_names: bool = Field(default=True, description="是否发送抽到的牌名列表", json_schema_extra={"label": "报牌名"})
+    send_interpretation: bool = Field(default=True, description="是否发送牌义解读", json_schema_extra={"label": "发送牌义解读"})
+    ai_interpretation: bool = Field(default=True, description="是否使用 AI 生成塔罗解读", json_schema_extra={"label": "AI 解读"})
+    send_preface: bool = Field(default=True, description="占卜前是否发送准备台词", json_schema_extra={"label": "发送准备台词"})
+    ai_preface: bool = Field(default=True, description="准备台词是否使用 AI 生成", json_schema_extra={"label": "AI 生成准备台词"})
+    contextual_preface: bool = Field(
+        default=True,
+        description="AI 生成准备台词时是否参考触发语句中的占卜要求和前文语境",
+        json_schema_extra={"label": "准备台词参照语境"},
+    )
+    send_extension_comment: bool = Field(default=True, description="占卜后是否发送延伸评论", json_schema_extra={"label": "发送延伸评论"})
+    ai_extension_comment: bool = Field(default=True, description="延伸评论是否使用 AI 生成", json_schema_extra={"label": "AI 生成延伸评论"})
+    contextual_extension_comment: bool = Field(
+        default=True,
+        description="AI 生成延伸评论时是否结合触发语句和抽牌内容",
+        json_schema_extra={"label": "延伸评论参照语境"},
+    )
+    delay_preface_seconds: float = Field(default=2.0, description="准备台词发送前延迟秒数", json_schema_extra={"label": "准备台词延迟秒数"})
+    delay_image_seconds: float = Field(default=2.0, description="牌面图片发送前延迟秒数", json_schema_extra={"label": "牌面图片延迟秒数"})
+    delay_text_seconds: float = Field(default=2.0, description="文字解读发送前延迟秒数", json_schema_extra={"label": "文字解读延迟秒数"})
+    delay_extension_seconds: float = Field(default=1.0, description="延伸评论发送前延迟秒数", json_schema_extra={"label": "延伸评论延迟秒数"})
+    delay_error_seconds: float = Field(default=1.0, description="错误提示发送前延迟秒数", json_schema_extra={"label": "错误提示延迟秒数"})
+    nickname_source: str = Field(
+        default="QQ昵称",
+        description="称呼来源：优先使用 QQ 昵称，或优先使用群名片",
+        json_schema_extra={"label": "称呼来源", "x-widget": "select"},
+    )
+    preface_text: str = Field(
+        default="好的，我这就抽一张牌。",
+        description="准备台词模板，可用 {user} {card_type} {formation}",
+        json_schema_extra={"label": "准备台词模板"},
+    )
+    extension_comment_text: str = Field(
+        default="先把这句记心里，慢慢来就好。",
+        description="延伸评论模板，可用 {user} {formation}",
+        json_schema_extra={"label": "延伸评论模板"},
+    )
+    llm_model: str = Field(default="replyer", description="AI 解读使用的模型任务名", json_schema_extra={"label": "AI 模型任务名"})
+
+
+class TarotsConfig(PluginConfigBase):
+    """塔罗插件完整配置。"""
+
+    plugin: PluginSectionConfig = Field(default_factory=PluginSectionConfig)
+    components: ComponentConfig = Field(default_factory=ComponentConfig)
+    cards: CardConfig = Field(default_factory=CardConfig)
+    adjustment: AdjustmentConfig = Field(default_factory=AdjustmentConfig)
+
+
+class TarotRuntime:
+    """塔罗占卜运行时逻辑。"""
+
+    def __init__(self, plugin: "TarotsPlugin") -> None:
+        self.plugin = plugin
+        self.card_map: dict[str, Any] = {}
+        self.formation_map: dict[str, Any] = {}
+        self.available_card_sets: list[str] = []
+        self.using_cards = ""
+
+    async def reload(self) -> None:
+        """重新扫描牌组并加载配置中的牌组。"""
+
+        self.available_card_sets = self._scan_available_card_sets()
+        configured = str(self.plugin.config.cards.using_cards or "").strip()
+        if configured in self.available_card_sets:
+            self.using_cards = configured
+        else:
+            self.using_cards = self.available_card_sets[0] if self.available_card_sets else ""
+            if configured:
+                self.plugin.ctx.logger.warning(
+                    "配置的塔罗牌组 %s 不可用，临时切换为 %s",
+                    configured,
+                    self.using_cards or "无可用牌组",
+                )
+
         self.card_map = {}
         self.formation_map = {}
-        
-        # 立即加载资源
-        self._load_resources()
-        logger.info(f"塔罗牌Action初始化完成，使用牌组: {self.using_cards}")
+        if not self.using_cards:
+            self.plugin.ctx.logger.error("未发现任何可用塔罗牌组")
+            return
 
-    def _load_card_setting(self) -> str:
-        """加载牌组设置"""
+        cards_json_path = TAROT_DIR / self.using_cards / "tarots.json"
+        formation_json_path = TAROT_DIR / "formation.json"
         try:
-            config_path = self.base_dir / "config.toml"
-            if config_path.exists():
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    config = toml.load(f)
-                return config.get("cards", {}).get("using_cards", "bilibili")
-        except Exception as e:
-            logger.error(f"加载牌组设置失败: {e}")
-        return "bilibili"
+            self.card_map = json.loads(cards_json_path.read_text(encoding="utf-8"))
+            self.formation_map = json.loads(formation_json_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            self.card_map = {}
+            self.formation_map = {}
+            self.plugin.ctx.logger.error("加载塔罗资源失败: %s", exc, exc_info=True)
+            return
 
-    def _load_resources(self):
-        """加载资源文件"""
-        try:
-            # 加载卡牌数据
-            cards_path = self.base_dir / f"tarot_jsons/{self.using_cards}/tarots.json"
-            if cards_path.exists():
-                with open(cards_path, encoding="utf-8") as f:
-                    self.card_map = json.load(f)
-                logger.info(f"加载卡牌数据: {len(self.card_map)}张")
-            
-            # 加载牌阵配置
-            formation_path = self.base_dir / "tarot_jsons/formation.json"
-            if formation_path.exists():
-                with open(formation_path, encoding="utf-8") as f:
-                    self.formation_map = json.load(f)
-                logger.info(f"加载牌阵配置: {len(self.formation_map)}种")
-                
-        except Exception as e:
-            logger.error(f"资源加载失败: {e}")
+        total_cards = self.card_map.get("_meta", {}).get("total_cards", len(self.card_map) - 1)
+        self.plugin.ctx.logger.info(
+            "塔罗牌组已加载: cards=%s total=%s formations=%s",
+            self.using_cards,
+            total_cards,
+            len(self.formation_map),
+        )
 
-    async def execute(self) -> Tuple[bool, str]:
-        """执行塔罗牌占卜 - 按原始版本逻辑"""
-        try:
-            logger.info("=== 塔罗牌Action开始执行 ===")
-            
-            # 1. 获取用户原始消息
-            user_message = await self._get_user_message()
-            logger.info(f"获取到用户消息: {user_message}")
-            
-            if not user_message:
-                await self.send_text("❌ 无法获取您的消息")
-                return False, "无用户消息"
-            
-            # 2. 检查数据是否加载
-            if not self.card_map or not self.formation_map:
-                await self.send_text("❌ 塔罗牌数据加载失败，请检查配置")
-                return False, "数据未加载"
-            
-            # 3. 按原始版本逻辑：先检测牌阵，再检测范围，最后提取查询
-            # 先检测牌阵关键词（原始版本逻辑）
-            formation_name = self._detect_formation(user_message)
-            
-            # 再检测范围关键词（原始版本逻辑）
-            card_type = self._detect_card_type(user_message)
-            
-            # 最后提取用户查询
-            user_query = self._extract_user_query(user_message)
-            
-            logger.info(f"原始版本逻辑解析: formation={formation_name}, card_type={card_type}, query={user_query}")
-            
-            # 4. 参数映射和校验
-            card_type = self._map_card_type(card_type)
-            formation_name = self._map_formation(formation_name)
-            
-            # 参数校验
-            if card_type not in ["全部", "大阿卡纳", "小阿卡纳"]:
-                await self.send_text("❌ 不支持的抽牌范围")
-                return False, "参数错误"
-                
-            if formation_name not in self.formation_map:
-                await self.send_text("❌ 不支持的抽牌方法")
-                return False, "参数错误"
-            
-            # 5. 获取牌阵配置
-            formation = self.formation_map[formation_name]
-            cards_num = formation["cards_num"]
-            is_cut = formation["is_cut"]
-            represent_list = formation["represent"]
-            
-            logger.info(f"牌阵配置: {formation_name}, 需要{cards_num}张牌")
-    
-            # 6. 获取有效卡牌范围并抽牌
-            valid_ids = self._get_card_range(card_type)
-            if not valid_ids:
-                await self.send_text("❌ 当前牌组配置错误")
-                return False, "参数错误"
-            
-            # 确保有足够的卡牌
-            if len(valid_ids) < cards_num:
-                await self.send_text(f"❌ 可用卡牌不足，需要{cards_num}张但只有{len(valid_ids)}张")
-                return False, "卡牌不足"
-            
-            selected_ids = random.sample(valid_ids, cards_num)
-            if is_cut:
-                selected_cards = [
-                    (cid, random.random() < 0.5)  # 切牌时50%概率逆位
-                    for cid in selected_ids
-                ]
-            else:
-                selected_cards = [
-                    (cid, False)  # 不切牌时全部正位
-                    for cid in selected_ids
-                ]
-    
-            logger.info(f"抽中卡牌: {selected_cards}")
-            
-            # 7. 发送每张牌面图片并收集卡牌信息
-            card_details = []
-            for idx, (card_id, is_reverse) in enumerate(selected_cards):
-                card_data = self.card_map.get(card_id, {})
-                if not card_data:
-                    logger.warning(f"卡牌ID不存在: {card_id}")
-                    continue
-                    
-                # 发送图片
-                image_sent = await self._send_card_image(card_id, is_reverse)
-                if image_sent:
-                    await asyncio.sleep(0.5)  # 防止消息频率限制
-                
-                # 收集卡牌信息用于解读
-                card_info = card_data.get("info", {})
-                pos_name = self._get_position_name(represent_list, idx, formation_name)
-                pos_meaning = self._get_position_meaning(represent_list, idx, formation_name)
-                
-                card_details.append({
-                    'position': pos_name,
-                    'position_meaning': pos_meaning,
-                    'name': card_data.get('name', '未知'),
-                    'is_reverse': is_reverse,
-                    'description': card_info.get('reverseDescription' if is_reverse else 'description', '暂无描述'),
-                })
-            
-            if not card_details:
-                await self.send_text("❌ 卡牌图片发送失败，无法进行占卜")
-                return False, "图片发送失败"
-            
-            # 8. 生成LLM解读（等待用户看完图片）
-            await asyncio.sleep(1)
-            
-            llm_interpretation = await self._generate_llm_interpretation(
-                card_details, formation_name, card_type, user_query, user_message
-            )
-            
-            await self.send_text(llm_interpretation)
-            
-            logger.info("=== 塔罗牌Action执行成功 ===")
-            return True, "塔罗占卜完成"
-            
-        except Exception as e:
-            error_msg = traceback.format_exc()
-            logger.error(f"执行失败: {error_msg}")
-            await self.send_text("❌ 占卜过程出现错误，请稍后再试")
-            return False, f"执行错误: {str(e)}"
+    def _scan_available_card_sets(self) -> list[str]:
+        return scan_available_card_sets()
 
-    def _detect_formation(self, user_message: str) -> str:
-        """按原始版本逻辑检测牌阵类型"""
-        if not user_message:
-            return "单张"  # 默认单张
-        
-        user_message_lower = user_message.lower()
-        
-        # 原始版本支持的牌阵关键词
-        formation_keywords = {
-            # 关键词 -> 牌阵名称
-            "圣三角": "圣三角",
-            "三角": "圣三角",
-            "时间之流": "时间之流",
-            "时间流": "时间之流",
-            "时间": "时间之流",
-            "四要素": "四要素",
-            "四张": "四要素",
-            "五牌阵": "五牌阵",
-            "五张": "五牌阵",
-            "五牌": "五牌阵",
-            "吉普赛十字": "吉普赛十字",
-            "吉普赛": "吉普赛十字",
-            "十字": "吉普赛十字",
-            "马蹄": "马蹄",
-            "六芒星": "六芒星",
-            "六芒": "六芒星",
-            "六张": "六芒星",
-        }
-        
-        # 检查用户消息中是否包含牌阵关键词
-        for keyword, formation in formation_keywords.items():
-            if keyword in user_message_lower:
-                logger.info(f"检测到牌阵关键词: '{keyword}' -> {formation}")
-                return formation
-        
-        # 如果没有检测到任何牌阵关键词，则使用默认单张（原始版本逻辑）
-        logger.info("未检测到牌阵关键词，使用默认单张牌阵")
-        return "单张"
+    async def execute(
+        self,
+        stream_id: str,
+        card_type: str = "全部",
+        formation: str = "单张",
+        target_user: str = "",
+        user_request: str = "",
+    ) -> tuple[bool, str]:
+        """执行一次塔罗占卜。"""
 
-    def _detect_card_type(self, user_message: str) -> str:
-        """按原始版本逻辑检测卡牌范围"""
-        if not user_message:
-            return "全部"  # 默认全部
-        
-        user_message_lower = user_message.lower()
-        
-        # 原始版本支持的范围关键词
-        card_type_keywords = {
-            # 关键词 -> 范围类型
-            "大阿卡纳": "大阿卡纳",
-            "大阿": "大阿卡纳",
-            "大牌": "大阿卡纳",
-            "小阿卡纳": "小阿卡纳",
-            "小阿": "小阿卡纳",
-            "小牌": "小阿卡纳",
-            "全部": "全部",
-            "所有": "全部",
-            "全牌": "全部",
-        }
-        
-        # 检查用户消息中是否包含范围关键词
-        for keyword, card_type in card_type_keywords.items():
-            if keyword in user_message_lower:
-                logger.info(f"检测到范围关键词: '{keyword}' -> {card_type}")
-                return card_type
-        
-        # 如果没有检测到任何范围关键词，则使用默认全部（原始版本逻辑）
-        logger.info("未检测到范围关键词，使用默认全部卡牌")
-        return "全部"
+        if not self.plugin.config.plugin.enabled:
+            return False, "塔罗插件未启用"
+        if not stream_id:
+            return False, "无法获取聊天流"
+        if not self.card_map or not self.formation_map:
+            await self.reload()
+        if not self.card_map:
+            await self._send_after_delay("error", "没有可用的塔罗牌组，无法占卜。", stream_id)
+            return False, "没有可用牌组"
 
-    def _extract_user_query(self, user_message: str) -> str:
-        """提取用户查询内容，移除关键词（按原始版本逻辑）"""
-        if not user_message:
-            return "运势"
-        
-        # 原始版本中需要移除的关键词（包括牌阵和范围关键词）
-        keywords_to_remove = self.activation_keywords + [
-            "抽张", "抽", "牌", "看看", "怎么样", "如何",
-            # 牌阵关键词
-            "圣三角", "三角", "时间之流", "时间流", "时间",
-            "四要素", "四张", "五牌阵", "五张", "五牌",
-            "吉普赛十字", "吉普赛", "十字", "马蹄", "六芒星", "六芒", "六张",
-            # 范围关键词
-            "大阿卡纳", "大阿", "大牌", "小阿卡纳", "小阿", "小牌", "全部", "所有", "全牌"
-        ]
-        
-        query = user_message
-        for kw in keywords_to_remove:
-            if kw in query:
-                query = query.replace(kw, "")
-        
-        # 清理多余空格
-        query = ' '.join(query.split()).strip()
-        
-        # 如果清理后为空，检查主题
-        if not query:
-            themes = {
-                "爱情": ["爱情", "恋爱", "感情", "姻缘", "桃花"],
-                "事业": ["事业", "工作", "职业", "职场", "升职"],
-                "财运": ["财运", "金钱", "财富", "投资", "赚钱"],
-                "学习": ["学习", "考试", "学业", "读书", "成绩"],
-                "健康": ["健康", "身体", "生病", "医疗"],
-            }
-            
-            for theme, keywords in themes.items():
-                for kw in keywords:
-                    if kw in user_message:
-                        return f"{theme}运势"
-            
-            return "近期运势"
-        
-        return query
+        card_type = self._map_card_type(card_type)
+        formation = self._map_formation(formation)
+        target_user = self._normalize_display_name(target_user)
 
-    def _map_card_type(self, card_type: str) -> str:
-        """映射卡牌类型参数"""
-        mapping = {
-            "全": "全部", "全部": "全部", "所有": "全部",
-            "大": "大阿卡纳", "大阿": "大阿卡纳", "大阿卡纳": "大阿卡纳", "大牌": "大阿卡纳",
-            "小": "小阿卡纳", "小阿": "小阿卡纳", "小阿卡纳": "小阿卡纳", "小牌": "小阿卡纳"
-        }
-        return mapping.get(card_type, card_type)
+        if card_type not in {"全部", "大阿卡纳", "小阿卡纳"}:
+            await self._send_after_delay("error", "不存在的抽牌范围，可选：全部、大阿卡纳、小阿卡纳。", stream_id)
+            return False, "抽牌范围错误"
+        if formation not in self.formation_map:
+            await self._send_after_delay("error", f"不存在的牌阵：{formation}", stream_id)
+            return False, "牌阵错误"
 
-    def _map_formation(self, formation: str) -> str:
-        """映射牌阵参数"""
-        mapping = {
-            "单": "单张", "单张": "单张", "一张": "单张",
-            "圣": "圣三角", "圣三角": "圣三角", "三角": "圣三角",
-            "时": "时间之流", "时间": "时间之流", "时间之流": "时间之流", "时间流": "时间之流",
-            "四": "四要素", "四要素": "四要素", "四张": "四要素",
-            "五": "五牌阵", "五牌": "五牌阵", "五牌阵": "五牌阵", "五张": "五牌阵",
-            "吉": "吉普赛十字", "吉普赛": "吉普赛十字", "吉普赛十字": "吉普赛十字", "十字": "吉普赛十字",
-            "马": "马蹄", "马蹄": "马蹄",
-            "六": "六芒星", "六芒": "六芒星", "六芒星": "六芒星", "六张": "六芒星"
-        }
-        return mapping.get(formation, formation)
+        if self.plugin.config.adjustment.send_preface:
+            preface = await self._build_preface(target_user, card_type, formation, user_request)
+            if preface:
+                await self._send_after_delay("preface", preface, stream_id)
+                await asyncio.sleep(0.4)
 
-    async def _get_user_message(self) -> str:
-        """获取用户原始消息"""
-        try:
-            # 方法1: 从message对象获取
-            if hasattr(self, 'message') and self.message:
-                for attr in ['plain_text', 'raw_message', 'content', 'text']:
-                    if hasattr(self.message, attr):
-                        value = getattr(self.message, attr)
-                        if value and str(value).strip():
-                            msg = str(value).strip()
-                            logger.debug(f"从message.{attr}获取消息: {msg[:50]}...")
-                            return msg
-            
-            # 方法2: 从action_data获取
-            action_data = getattr(self, 'action_data', {})
-            if isinstance(action_data, dict):
-                for key in ['user_query', 'query', 'question', 'message', 'content', 'text']:
-                    if key in action_data and action_data[key]:
-                        msg = str(action_data[key]).strip()
-                        logger.debug(f"从action_data.{key}获取消息: {msg[:50]}...")
-                        return msg
-            
-            logger.warning("未能获取用户消息")
-            return ""
-            
-        except Exception as e:
-            logger.error(f"获取用户消息失败: {e}")
-            return ""
+        selected_cards = self._draw_cards(card_type, formation)
+        if not selected_cards:
+            await self._send_after_delay("error", "当前牌组数据不完整，无法抽牌。", stream_id)
+            return False, "牌组数据不完整"
 
-    def _get_card_range(self, card_type: str) -> list:
-        """获取卡牌范围"""
-        valid_ids = []
-        
-        # 收集所有数字ID
-        for key in self.card_map.keys():
-            if key != "_meta" and key.isdigit():
-                try:
-                    card_id = int(key)
-                    valid_ids.append(str(card_id))
-                except ValueError:
-                    continue
-        
-        # 按范围过滤
-        if card_type == "大阿卡纳":
-            return [cid for cid in valid_ids if 0 <= int(cid) < 22]
-        elif card_type == "小阿卡纳":
-            return [cid for cid in valid_ids if 22 <= int(cid) < 78]
-        else:  # 全部
-            return valid_ids
-
-    def _get_position_name(self, represent_list: List, idx: int, formation_name: str) -> str:
-        """安全获取位置名称"""
-        try:
-            if (isinstance(represent_list, list) and len(represent_list) > 0 and 
-                isinstance(represent_list[0], list) and idx < len(represent_list[0])):
-                return represent_list[0][idx]
-        except (IndexError, TypeError):
-            pass
-        return f"位置{idx+1}"
-
-    def _get_position_meaning(self, represent_list: List, idx: int, formation_name: str) -> str:
-        """安全获取位置含义"""
-        try:
-            if (isinstance(represent_list, list) and len(represent_list) > 1 and 
-                isinstance(represent_list[1], list) and idx < len(represent_list[1])):
-                return represent_list[1][idx]
-        except (IndexError, TypeError):
-            pass
-        
-        # 根据牌阵类型提供默认含义
-        default_meanings = {
-            "单张": "当前状况",
-            "圣三角": ["过去", "现在", "未来"],
-            "时间之流": ["过去", "现在", "未来"],
-            "四要素": ["行动", "情感", "思想", "物质"],
-            "五牌阵": ["现状", "挑战", "选择", "环境", "结果"],
-            "吉普赛十字": ["现状", "障碍", "目标", "过去", "未来"],
-            "马蹄": ["过去", "现在", "隐藏", "环境", "期望", "结果"],
-            "六芒星": ["过去", "现在", "未来", "原因", "环境", "结果"]
-        }
-        
-        if formation_name in default_meanings:
-            meanings = default_meanings[formation_name]
-            if isinstance(meanings, list) and idx < len(meanings):
-                return meanings[idx]
-            elif isinstance(meanings, str):
-                return meanings
-        
-        return ""
-
-    async def _generate_llm_interpretation(self, card_details: List[Dict], formation_name: str, 
-                                         card_type: str, user_query: str, user_message: str) -> str:
-        """使用LLM生成个性化解读"""
-        try:
-            # 构建完整的牌阵信息
-            formation_info = self._build_formation_info(card_details, formation_name, card_type)
-            
-            # 判断是单张牌还是复杂牌阵
-            is_single = len(card_details) == 1
-            
-            # 构建提示词
-            prompt = self._build_interpretation_prompt(
-                formation_info, formation_name, card_type, user_query, user_message, is_single
-            )
-            
-            logger.info(f"生成LLM提示词，长度: {len(prompt)}")
-            
-            # 调用LLM API
-            models = llm_api.get_available_models()
-            if not models:
-                logger.warning("无法获取模型配置，使用备用解读")
-                return self._get_fallback_interpretation(card_details, formation_name, user_query, is_single)
-            
-            chat_model_config = models.get("replyer") or models.get("default")
-            if not chat_model_config:
-                logger.warning("无法获取回复模型，使用备用解读")
-                return self._get_fallback_interpretation(card_details, formation_name, user_query, is_single)
-            
-            success, result, _, _ = await llm_api.generate_with_model(
-                prompt, 
-                model_config=chat_model_config, 
-                request_type="tarots_interpretation"
-            )
-            
-            if success and result and len(result.strip()) > 10:
-                interpretation = result.strip()
-                # 清理结果
-                interpretation = self._clean_interpretation(interpretation, formation_name, is_single)
-                return interpretation
-            else:
-                logger.warning(f"LLM生成失败: success={success}, result_length={len(str(result))}")
-                return self._get_fallback_interpretation(card_details, formation_name, user_query, is_single)
-                
-        except Exception as e:
-            logger.error(f"LLM解读生成失败: {e}")
-            traceback.print_exc()
-            return self._get_fallback_interpretation(card_details, formation_name, user_query, len(card_details) == 1)
-
-    def _build_formation_info(self, card_details: List[Dict], formation_name: str, card_type: str) -> str:
-        """构建牌阵信息字符串"""
-        info_lines = []
-        
-        # 添加牌阵概述
-        info_lines.append(f"牌阵：{formation_name}（{card_type}）")
-        info_lines.append(f"牌数：{len(card_details)}张")
-        info_lines.append("")
-        
-        # 添加每张牌的详细信息
-        for i, card in enumerate(card_details):
-            status = "逆位" if card['is_reverse'] else "正位"
-            position_info = f"{card['position']}（{card['position_meaning']}）" if card['position_meaning'] else card['position']
-            
-            line = f"{i+1}. {card['name']} {status} - {position_info}"
-            if card['description'] and card['description'] != "暂无描述":
-                desc = card['description'][:50] + "..." if len(card['description']) > 50 else card['description']
-                line += f"\n   含义：{desc}"
-            
-            info_lines.append(line)
-        
-        return "\n".join(info_lines)
-
-    def _build_interpretation_prompt(self, formation_info: str, formation_name: str, 
-                                   card_type: str, user_query: str, user_message: str, is_single: bool) -> str:
-        """构建LLM提示词"""
-        
-        # 根据是否单张牌设置不同的要求
-        if is_single:
-            length_limit = "2-3句话，不超过60字"
-            per_card_instruction = ""
-        else:
-            card_count = formation_info.count("张牌")
-            length_limit = f"每张牌1-1.5句，句子内容要简洁明了,所有解牌内容总共不超过{card_count * 30}字"
-            per_card_instruction = "请为每张牌分别提供简短解读，整体保持连贯。"
-        
-        prompt = f"""请为{user_query}的塔罗牌占卜提供简短解读。
-
-{formation_info}
-
-用户问题：{user_query}
-抽牌范围：{card_type}
-牌阵类型：{formation_name}
-
-要求：
-1. 直接回应用户关于{user_query}的问题
-2. {per_card_instruction}
-3. 像朋友聊天一样自然亲切,不要有太多包袱
-4. {length_limit}
-5. 语气温暖，根据结果给出实用的建议
-6. 结合每张牌在牌阵中的位置含义
-7. 不要用专业术语，保持口语化
-
-解读："""
-        
-        return prompt
-
-    def _clean_interpretation(self, interpretation: str, formation_name: str, is_single: bool) -> str:
-        """清理和截断解读文本"""
-        # 移除多余空行和空格
-        lines = [line.strip() for line in interpretation.split('\n') if line.strip()]
-        text = ' '.join(lines)
-        
-        # 限制长度
-        if is_single:
-            # 单张牌：不超过60字
-            if len(text) > 60:
-                for i in range(55, 60):
-                    if i < len(text) and text[i] in '。！？.?!':
-                        text = text[:i+1]
-                        break
-                else:
-                    text = text[:57] + "..."
-        else:
-            # 复杂牌阵：根据牌数决定最大长度
-            # 计算牌数（根据formation_name判断）
-            formation_card_count = {
-                "圣三角": 3,
-                "时间之流": 3,
-                "四要素": 4,
-                "五牌阵": 5,
-                "吉普赛十字": 5,
-                "马蹄": 6,
-                "六芒星": 6
-            }
-            
-            card_count = formation_card_count.get(formation_name, 3)  # 默认3张
-            max_chars = card_count * 85  # 每张牌85字，比提示词要求更宽松
-            
-            if len(text) > max_chars:
-                # 在标点处优雅截断
-                for i in range(max_chars - 20, max_chars):
-                    if i < len(text) and text[i] in '。！？.?!，,;；':
-                        text = text[:i+1]
-                        break
-                else:
-                    # 没有找到合适标点，在完整句子后加省略号
-                    text = text[:max_chars-3] + "..."
-        
-        # 添加牌阵前缀
-        if not text.startswith(formation_name):
-            text = f"🔮 {formation_name}解读：{text}"
-        
-        return text
-
-    def _get_fallback_interpretation(self, card_details: List[Dict], formation_name: str, 
-                                   user_query: str, is_single: bool) -> str:
-        """备用解读方案"""
-        if is_single:
-            # 单张牌的备用解读
-            card = card_details[0]
-            status = "逆位" if card['is_reverse'] else "正位"
-            interpretations = [
-                f"✨ {card['name']}{status}说：关于{user_query}，放轻松就好～",
-                f"💫 {card['name']}{status}在讲：{user_query}方面，相信自己直觉哦。",
-                f"🌟 {card['name']}{status}表示：{user_query}的话，保持平常心啦。",
-            ]
-        else:
-            # 复杂牌阵的备用解读
-            card_names = [f"{card['name']}{'逆位' if card['is_reverse'] else '正位'}" for card in card_details]
-            card_list = "、".join(card_names)
-            
-            interpretations = [
-                f"🔮 {formation_name}抽到{card_list}～关于{user_query}，整体能量还不错，保持信心！",
-                f"✨ {formation_name}牌阵{card_list}，{user_query}方面需要平衡各因素，别太担心～",
-                f"💫 {formation_name}的{card_list}在为{user_query}提供指引，耐心观察会有收获。",
-            ]
-        
-        return random.choice(interpretations)
-
-    async def _send_card_image(self, card_id: str, is_reverse: bool) -> bool:
-        """发送卡牌图片"""
-        try:
+        card_details: list[dict[str, Any]] = []
+        sent_images = 0
+        represent_list = self.formation_map[formation].get("represent", [])
+        for index, (card_id, is_reverse) in enumerate(selected_cards):
             card_data = self.card_map.get(card_id, {})
-            if not card_data:
-                logger.error(f"卡牌数据不存在: {card_id}")
-                return False
-                
-            card_name = card_data.get("name", "")
-            if not card_name:
-                logger.error(f"卡牌名称不存在: {card_id}")
-                return False
-            
-            # 构建图片文件名
-            position = "逆位" if is_reverse else "正位"
-            
-            # 尝试多种可能的文件名格式
-            possible_filenames = [
-                f"{card_name}{position}.jpg",
-                f"{card_name}{position}.png",
-                f"{card_name}.jpg",
-                f"{card_name}.png",
-                f"{card_name.replace('ACE', '王牌').replace('2', '二').replace('3', '三').replace('4', '四').replace('5', '五').replace('6', '六').replace('7', '七').replace('8', '八').replace('9', '九').replace('10', '十')}{position}.jpg",
-            ]
-            
-            img_path = None
-            for filename in possible_filenames:
-                path = self.base_dir / f"tarot_jsons/{self.using_cards}/{filename}"
-                if path.exists():
-                    img_path = path
-                    logger.info(f"找到图片文件: {path}")
-                    break
-            
-            if not img_path:
-                logger.error(f"图片文件不存在，尝试的文件名: {possible_filenames}")
-                return False
-            
-            # 读取并发送图片
-            with open(img_path, "rb") as f:
-                img_data = f.read()
-            
-            img_base64 = base64.b64encode(img_data).decode('utf-8')
-            await self.send_image(img_base64)
-            
-            logger.info(f"成功发送图片: {img_path.name}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"发送图片失败: {str(e)}")
-            traceback.print_exc()
+            if not isinstance(card_data, dict):
+                continue
+
+            await self._delay_before_send("image")
+            if await self._send_card_image(card_data, is_reverse, stream_id):
+                sent_images += 1
+                await asyncio.sleep(0.5)
+
+            card_info = card_data.get("info", {})
+            card_details.append(
+                {
+                    "position": self._get_position_name(represent_list, index),
+                    "name": card_data.get("name", "未知"),
+                    "is_reverse": is_reverse,
+                    "description": card_info.get("reverseDescription" if is_reverse else "description", "暂无描述"),
+                    "position_meaning": self._get_position_meaning(represent_list, index, formation),
+                }
+            )
+
+        if not sent_images:
+            await self._send_after_delay("error", "塔罗牌图片发送失败，无法继续占卜。", stream_id)
+            return False, "图片发送失败"
+
+        await asyncio.sleep(1)
+        card_names_text = self._format_card_names(card_details)
+        if self.plugin.config.adjustment.send_card_names and card_names_text:
+            await self._send_after_delay("text", f"抽到的牌：\n{card_names_text}", stream_id)
+            await asyncio.sleep(0.5)
+
+        interpretation = ""
+        if self.plugin.config.adjustment.send_interpretation:
+            interpretation = await self._generate_interpretation(card_details, formation, target_user)
+            await self._send_after_delay("text", interpretation, stream_id)
+
+        if self.plugin.config.adjustment.send_extension_comment:
+            extension = await self._build_extension(target_user, formation, interpretation, user_request, card_details)
+            if extension:
+                await self._send_after_delay("extension", extension, stream_id)
+
+        if target_user:
+            return True, f"已为{target_user}抽取塔罗牌"
+        return True, "已抽取塔罗牌"
+
+    def _draw_cards(self, card_type: str, formation_name: str) -> list[tuple[str, bool]]:
+        formation = self.formation_map.get(formation_name, {})
+        cards_num = int(formation.get("cards_num", 1))
+        valid_ids = self._get_card_range(card_type)
+        valid_ids = [card_id for card_id in valid_ids if card_id in self.card_map]
+        if len(valid_ids) < cards_num:
+            return []
+
+        selected_ids = random.sample(valid_ids, cards_num)
+        is_cut = bool(formation.get("is_cut", False))
+        return [(card_id, is_cut and random.random() < 0.5) for card_id in selected_ids]
+
+    async def _send_card_image(self, card_data: dict[str, Any], is_reverse: bool, stream_id: str) -> bool:
+        card_name = str(card_data.get("name") or "").strip()
+        if not card_name:
             return False
 
-@register_plugin
-class TarotsPlugin(BasePlugin):
-    """塔罗牌插件"""
-    
-    plugin_name = "tarots_plugin"
-    enable_plugin = True
-    config_file_name = "config.toml"
-    dependencies = []
-    python_dependencies = []
+        image_path = self._find_card_image_path(card_name, is_reverse)
+        if image_path is None:
+            self.plugin.ctx.logger.error("塔罗牌图片不存在: cards=%s name=%s reverse=%s", self.using_cards, card_name, is_reverse)
+            return False
 
-    plugin_description = "提供高版本塔罗牌占卜功能，牌面为BiliBili幻星集"
-    plugin_version = "4.1.0"
-    plugin_author = "KArabella"
+        try:
+            img_base64 = base64.b64encode(image_path.read_bytes()).decode("utf-8")
+            await self.plugin.ctx.send.image(img_base64, stream_id)
+            return True
+        except Exception as exc:
+            self.plugin.ctx.logger.error("发送塔罗牌图片失败: %s", exc, exc_info=True)
+            return False
 
-    config_section_descriptions = {
-        "plugin": "插件基本配置",
-        "components": "组件启用控制",
-        "cards": "牌组配置"
-    }
+    async def _send_after_delay(self, stage: str, text: str, stream_id: str) -> None:
+        await self._delay_before_send(stage)
+        self.plugin._mark_memory_silent_text(stream_id, text)
+        await self.plugin.ctx.send.text(text, stream_id)
 
-    config_schema = {
-        "plugin": {
-            "config_version": ConfigField(type=str, default="4.1.0", description="配置文件版本"),
-            "enabled": ConfigField(type=bool, default=True, description="是否启用插件"),
-        },
-        "components": {
-            "enable_tarots": ConfigField(type=bool, default=True, description="启用塔罗牌占卜功能"),
-        },
-        "cards": {
-            "using_cards": ConfigField(type=str, default='bilibili', description="当前使用牌组"),
-            "use_cards": ConfigField(type=list, default=['bilibili','east'], description="可用牌组列表")
+    async def _delay_before_send(self, stage: str) -> None:
+        cfg = self.plugin.config.adjustment
+        delay_map = {
+            "preface": cfg.delay_preface_seconds,
+            "image": cfg.delay_image_seconds,
+            "text": cfg.delay_text_seconds,
+            "extension": cfg.delay_extension_seconds,
+            "error": cfg.delay_error_seconds,
         }
-    }
+        try:
+            await asyncio.sleep(max(0.0, float(delay_map.get(stage, cfg.delay_text_seconds))))
+        except (TypeError, ValueError):
+            await asyncio.sleep(0.8)
 
-    def get_plugin_components(self) -> List[Tuple[ComponentInfo, Type]]:
-        """返回插件组件"""
-        components = []
-        if self.get_config("components.enable_tarots", True):
-            components.append((TarotsAction.get_action_info(), TarotsAction))
-        
-        logger.info(f"注册塔罗牌Action组件: {len(components)}个")
-        return components
+    @staticmethod
+    def _build_bot_style_context() -> str:
+        """构建与主程序一致的对外发言风格要求。"""
+
+        bot_name = global_config.bot.nickname.strip()
+        alias_names = [alias.strip() for alias in global_config.bot.alias_names if alias.strip()]
+        bot_aliases = f"，也有人叫你{','.join(alias_names)}" if alias_names else ""
+        personality = global_config.personality.personality.strip() or "是人类。"
+        reply_style = global_config.personality.reply_style.strip()
+
+        style_lines = [
+            "【麦麦发言设定】",
+            f"你正在代替{bot_name or '麦麦'}对外发言，名字是{bot_name or '麦麦'}{bot_aliases}。",
+            f"人设：{personality}",
+        ]
+        if reply_style:
+            style_lines.append(f"表达风格：{reply_style}")
+            style_lines.append("上面的表达风格是硬性要求，所有对外发送的句子都必须自然体现。")
+        return "\n".join(style_lines)
+
+    async def _build_preface(self, user: str, card_type: str, formation: str, user_request: str) -> str:
+        cfg = self.plugin.config.adjustment
+        template = cfg.preface_text.strip()
+        if cfg.send_preface and cfg.ai_preface:
+            user_line = f"用户昵称：{user}" if user else "用户昵称：未取得，请不要称呼用户"
+            context_line = (
+                f"用户占卜请求：{user_request}\n请自然承接这个占卜问题，但不要提前给出结果。"
+                if cfg.contextual_preface
+                else "用户占卜请求：未启用参照语境"
+            )
+            bot_style_context = self._build_bot_style_context()
+            prompt = (
+                f"{bot_style_context}\n\n"
+                "你是塔罗占卜助手，请生成一句占卜前的准备台词。\n"
+                "要求：只输出一句话，10-30字，自然亲切，不透露具体牌面。"
+                "如果没有用户昵称，就用“好的”“知道了”“明白了”这类无称呼开头。\n\n"
+                f"{user_line}\n抽牌范围：{card_type}\n牌阵：{formation}\n{context_line}\n\n"
+                "准备台词："
+            )
+            generated = await self._call_llm(prompt, max_len=80)
+            if generated:
+                return generated
+        if not user and "{user}" in template:
+            return random.choice(("好的，我这就抽一张牌。", "知道了，我来抽牌。", "明白了，我这就开始。"))
+        return self._render_template(template, user=user, card_type=card_type, formation=formation)
+
+    async def _build_extension(
+        self,
+        user: str,
+        formation: str,
+        interpretation: str,
+        user_request: str,
+        card_details: list[dict[str, Any]],
+    ) -> str:
+        cfg = self.plugin.config.adjustment
+        template = cfg.extension_comment_text.strip()
+        if cfg.send_extension_comment and cfg.ai_extension_comment:
+            user_line = f"用户昵称：{user}" if user else "用户昵称：未取得，请不要称呼用户"
+            context_lines = ["用户原话：未启用参照语境", "抽牌内容：未启用参照语境"]
+            if cfg.contextual_extension_comment:
+                cards_info = self._format_cards_for_prompt(card_details)
+                context_lines = [
+                    f"用户占卜请求：{user_request}",
+                    f"抽牌内容：{cards_info}",
+                    "请结合用户真正关心的问题和抽到的牌，给一句后续提醒。",
+                ]
+            context_text = "\n".join(context_lines)
+            bot_style_context = self._build_bot_style_context()
+            prompt = (
+                f"{bot_style_context}\n\n"
+                "你是塔罗占卜助手，请生成一句占卜后的延伸评论。\n"
+                "要求：只输出一句话，字数不限，温和自然，不复述牌面。"
+                "如果没有用户昵称，就不要称呼用户。\n\n"
+                f"{user_line}\n牌阵：{formation}\n{context_text}\n上文解读：{interpretation}\n\n"
+                "延伸评论："
+            )
+            generated = await self._call_llm(prompt, max_len=60)
+            if generated:
+                return generated
+        if not user and "{user}" in template:
+            return random.choice(("先把这句记心里，慢慢来就好。", "整体先别急，按自己的节奏走。", "放轻松，接下来顺着感觉调整就好。"))
+        return self._render_template(template, user=user, formation=formation)
+
+    async def _generate_interpretation(self, card_details: list[dict[str, Any]], formation: str, user: str) -> str:
+        if self.plugin.config.adjustment.ai_interpretation:
+            cards_info = self._format_cards_for_prompt(card_details)
+            target_text = f"为{user}解读塔罗牌" if user else "解读塔罗牌，不要称呼用户"
+            bot_style_context = self._build_bot_style_context()
+            prompt = (
+                f"{bot_style_context}\n\n"
+                f"请用轻松自然的语气{target_text}，保持非常简短（2-3句话）。\n\n"
+                f"牌阵：{formation}\n抽到的牌：{cards_info}\n\n"
+                "请用1句话总结牌面意思，再用1句话给出实用建议。不要用专业术语，不要讲大道理。\n"
+                "你的解读（50字以内）："
+            )
+            generated = await self._call_llm(prompt, max_len=100)
+            if generated:
+                return generated
+        return self._generate_fallback_interpretation(card_details, user)
+
+    def _format_cards_for_prompt(self, card_details: list[dict[str, Any]]) -> str:
+        return "；".join(
+            f"{card['position']}：{card['name']}（{'逆位' if card['is_reverse'] else '正位'}，{card['description']}）"
+            for card in card_details
+        )
+
+    async def _call_llm(self, prompt: str, max_len: int) -> str:
+        try:
+            result = await self.plugin.ctx.llm.generate(
+                prompt=prompt,
+                model=self.plugin.config.adjustment.llm_model or "replyer",
+                temperature=0.7,
+            )
+        except Exception as exc:
+            self.plugin.ctx.logger.error("塔罗插件调用 LLM 失败: %s", exc, exc_info=True)
+            return ""
+
+        result = self._peel_envelope(result)
+        if isinstance(result, dict):
+            if not result.get("success"):
+                self.plugin.ctx.logger.error("塔罗插件 LLM 返回失败: %s", result.get("error", "未知错误"))
+                return ""
+            reply = str(result.get("response") or "").strip()
+        else:
+            reply = str(result or "").strip()
+
+        reply = reply.replace("\n", " ").strip(" \"'")
+        if 0 < len(reply) <= max_len:
+            return reply
+        return ""
+
+    def _peel_envelope(self, data: Any, max_depth: int = 4) -> Any:
+        for _ in range(max_depth):
+            if not isinstance(data, dict):
+                return data
+            if "success" not in data or "result" not in data:
+                return data
+            inner = data.get("result")
+            if inner is None:
+                return data
+            data = inner
+        return data
+
+    def _generate_fallback_interpretation(self, card_details: list[dict[str, Any]], user: str) -> str:
+        summaries: list[str] = []
+        for card in card_details:
+            name = str(card.get("name") or "未知")
+            orientation = "逆位" if card.get("is_reverse") else "正位"
+            position = str(card.get("position") or "").strip()
+            description = self._compact_card_meaning(str(card.get("description") or "暂无牌义"))
+            card_line = f"{name}（{orientation}）：{description}"
+            summaries.append(f"{position}：\n{card_line}" if position else card_line)
+
+        if not summaries:
+            return "已抽到牌，但当前牌组没有可用的牌义文本。"
+        if len(summaries) == 1:
+            return summaries[0]
+        return "\n".join(summaries)
+
+    @staticmethod
+    def _compact_card_meaning(description: str, max_items: int = 4) -> str:
+        parts = [
+            part.strip()
+            for part in re.split(r"[、,，;；。.\s]+", description)
+            if part.strip()
+        ]
+        if not parts:
+            return "暂无牌义"
+        return "、".join(parts[:max_items])
+
+    def _format_card_names(self, card_details: list[dict[str, Any]]) -> str:
+        parts = []
+        for card in card_details:
+            name = str(card.get("name") or "未知")
+            orientation = "逆位" if card.get("is_reverse") else "正位"
+            name = f"{name}（{orientation}）"
+            position = self._format_position_label(str(card.get("position") or ""))
+            parts.append(f"{position}：{name}" if position else name)
+        return "\n".join(parts)
+
+    @staticmethod
+    def _format_position_label(position: str) -> str:
+        normalized = str(position or "").strip()
+        if not normalized:
+            return ""
+        return re.split(r"[，,]", normalized, maxsplit=1)[0].strip() or normalized
+
+    def _map_card_type(self, card_type: str) -> str:
+        return CARD_TYPE_ALIASES.get(str(card_type or "").strip(), str(card_type or "").strip() or "全部")
+
+    def _map_formation(self, formation: str) -> str:
+        return FORMATION_ALIASES.get(str(formation or "").strip(), str(formation or "").strip() or "单张")
+
+    def _get_card_range(self, card_type: str) -> list[str]:
+        if card_type == "大阿卡纳":
+            return [str(i) for i in range(22)]
+        if card_type == "小阿卡纳":
+            return [str(i) for i in range(22, 78)]
+        return [str(i) for i in range(78)]
+
+    def _get_position_name(self, represent_list: Any, index: int) -> str:
+        try:
+            names = represent_list[0]
+            if isinstance(names, list) and index < len(names):
+                return str(names[index])
+        except (IndexError, TypeError):
+            pass
+        return f"位置{index + 1}"
+
+    def _get_position_meaning(self, represent_list: Any, index: int, formation: str) -> str:
+        try:
+            meanings = represent_list[1]
+            if isinstance(meanings, list) and index < len(meanings):
+                return str(meanings[index])
+        except (IndexError, TypeError):
+            pass
+
+        defaults: dict[str, str | list[str]] = {
+            "单张": "当前状况",
+            "圣三角": ["现状", "愿望", "行动"],
+            "时间之流": ["过去", "现在", "未来"],
+            "四要素": ["行动", "言语", "感情", "物质"],
+            "五牌阵": ["现在或主要问题", "过去的影响", "未来", "主要原因", "行动结果"],
+            "吉普赛十字": ["对方的想法", "你的想法", "问题", "环境", "结果"],
+            "马蹄": ["现状", "可预知", "不可预知", "即将发生", "结果", "主观想法"],
+            "六芒星": ["过去", "现在", "未来", "对策", "环境", "态度", "预测结果"],
+        }
+        meaning = defaults.get(formation, "未知")
+        if isinstance(meaning, list) and index < len(meaning):
+            return meaning[index]
+        if isinstance(meaning, str):
+            return meaning
+        return "未知"
+
+    def _find_card_image_path(self, card_name: str, is_reverse: bool) -> Path | None:
+        deck_dir = TAROT_DIR / self.using_cards
+        for filename in self._get_local_image_filenames(card_name, is_reverse):
+            image_path = deck_dir / filename
+            if image_path.exists():
+                return image_path
+        return None
+
+    def _get_local_image_filenames(self, card_name: str, is_reverse: bool) -> list[str]:
+        cleaned_name = card_name
+        for source, target in NUMBER_NAME_MAP.items():
+            cleaned_name = cleaned_name.replace(source, target)
+        position = "逆位" if is_reverse else "正位"
+        candidates = [f"{cleaned_name}{position}.jpg"]
+        for source, target in CARD_NAME_ALIASES.items():
+            if source in cleaned_name:
+                candidates.append(f"{cleaned_name.replace(source, target)}{position}.jpg")
+        return list(dict.fromkeys(candidates))
+
+    def _render_template(self, template: str, **kwargs: str) -> str:
+        if not template:
+            return ""
+        try:
+            return template.format(**kwargs)
+        except Exception:
+            return template
+
+    def _normalize_display_name(self, display_name: str) -> str:
+        normalized = str(display_name or "").strip()
+        if not normalized or normalized == "用户" or QQ_ID_PATTERN.fullmatch(normalized):
+            return ""
+        return normalized
+
+
+class TarotsPlugin(MaiBotPlugin):
+    """麦麦塔罗插件，适配 maibot-plugin-sdk v2。"""
+
+    config_model = TarotsConfig
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._runtime: TarotRuntime | None = None
+        self._pending_tasks: set[asyncio.Task[Any]] = set()
+        self._memory_silent_texts: dict[tuple[str, str], int] = {}
+
+    async def on_load(self) -> None:
+        self._runtime = TarotRuntime(self)
+        await self._runtime.reload()
+        self.ctx.logger.info("麦麦塔罗插件已加载")
+
+    async def on_unload(self) -> None:
+        to_cancel = [task for task in self._pending_tasks if not task.done()]
+        for task in to_cancel:
+            task.cancel()
+        if to_cancel:
+            await asyncio.gather(*to_cancel, return_exceptions=True)
+        self._pending_tasks.clear()
+        self.ctx.logger.info("麦麦塔罗插件已卸载")
+
+    async def on_config_update(self, scope: str, config_data: dict, version: str) -> None:
+        del scope, config_data, version
+        if self._runtime is not None:
+            await self._runtime.reload()
+
+    def get_webui_config_schema(
+        self,
+        *,
+        plugin_id: str = "",
+        plugin_name: str = "",
+        plugin_version: str = "",
+        plugin_description: str = "",
+        plugin_author: str = "",
+    ) -> dict[str, Any]:
+        schema = super().get_webui_config_schema(
+            plugin_id=plugin_id,
+            plugin_name=plugin_name,
+            plugin_version=plugin_version,
+            plugin_description=plugin_description,
+            plugin_author=plugin_author,
+        )
+        sections = schema.get("sections")
+        if not isinstance(sections, dict):
+            return schema
+
+        plugin_section = sections.get("plugin")
+        if isinstance(plugin_section, dict):
+            fields = plugin_section.get("fields")
+            if isinstance(fields, dict):
+                config_version = fields.get("config_version")
+                if isinstance(config_version, dict):
+                    config_version["hidden"] = True
+                    config_version["disabled"] = True
+                    config_version["ui_type"] = "text"
+                    config_version["input_type"] = "text"
+
+        components_section = sections.get("components")
+        if isinstance(components_section, dict):
+            fields = components_section.get("fields")
+            if isinstance(fields, dict):
+                enable_tarots = fields.get("enable_tarots")
+                if isinstance(enable_tarots, dict):
+                    enable_tarots["label"] = "自然语言触发"
+                    enable_tarots["hint"] = "开启后会拦截自然语言塔罗请求；未命中拦截时也允许 planner 调用塔罗兜底。"
+                    enable_tarots["description"] = str(enable_tarots["hint"])
+                    enable_tarots["order"] = 10
+                enable_tarots_command = fields.get("enable_tarots_command")
+                if isinstance(enable_tarots_command, dict):
+                    enable_tarots_command["label"] = "启用 /塔罗 命令"
+                    enable_tarots_command["hint"] = "开启后可使用 /塔罗、/tarot 或 /tarots 命令手动触发。"
+                    enable_tarots_command["description"] = str(enable_tarots_command["hint"])
+                    enable_tarots_command["order"] = 20
+                natural_trigger_mode = fields.get("natural_trigger_mode")
+                if isinstance(natural_trigger_mode, dict):
+                    natural_trigger_mode["choices"] = list(NATURAL_TRIGGER_MODES)
+                    natural_trigger_mode["ui_type"] = "select"
+                    natural_trigger_mode["label"] = "自然语言触发模式"
+                    natural_trigger_mode["hint"] = (
+                        "严格只拦截明确塔罗/占卜请求；平衡兼顾常见自然语言；宽松会尝试拦截更多看看/算算类请求。"
+                    )
+                    natural_trigger_mode["description"] = str(natural_trigger_mode["hint"])
+                    natural_trigger_mode["order"] = 11
+
+        cards_section = sections.get("cards")
+        if isinstance(cards_section, dict):
+            fields = cards_section.get("fields")
+            if isinstance(fields, dict):
+                using_cards = fields.get("using_cards")
+                if isinstance(using_cards, dict):
+                    using_cards["choices"] = scan_available_card_sets()
+                    using_cards["ui_type"] = "select"
+                    using_cards["label"] = "当前牌组"
+                    using_cards["hint"] = "只显示 tarot_jsons 下包含 tarots.json 的本地牌组"
+
+        adjustment_section = sections.get("adjustment")
+        if isinstance(adjustment_section, dict):
+            fields = adjustment_section.get("fields")
+            if isinstance(fields, dict):
+                nickname_source = fields.get("nickname_source")
+                if isinstance(nickname_source, dict):
+                    nickname_source["choices"] = ["QQ昵称", "群名片"]
+                    nickname_source["ui_type"] = "select"
+                    nickname_source["label"] = "称呼来源"
+                self._apply_adjustment_field_layout(fields, self.config.adjustment)
+
+        return schema
+
+    @staticmethod
+    def _apply_adjustment_field_layout(fields: dict[str, Any], cfg: AdjustmentConfig) -> None:
+        field_layout = {
+            "send_card_names": {
+                "label": "报牌名",
+                "hint": "开启后发送“抽到的牌”列表，多张牌会逐行显示。",
+                "order": 10,
+            },
+            "send_interpretation": {
+                "label": "发送牌义解读",
+                "hint": "开启后发送牌义解读；关闭后只发送牌面图片和已开启的其它输出。",
+                "order": 11,
+            },
+            "ai_interpretation": {
+                "label": "牌义解读 / AI 生成",
+                "hint": "关闭时使用牌组 JSON 中的正逆位牌义文本。",
+                "order": 12,
+            },
+            "send_preface": {
+                "label": "发送准备台词",
+                "hint": "关闭后不会发送准备台词，下方准备台词相关选项不生效。",
+                "order": 20,
+            },
+            "ai_preface": {
+                "label": "准备台词 / AI 生成",
+                "hint": "关闭时使用固定准备台词模板。",
+                "order": 21,
+            },
+            "contextual_preface": {
+                "label": "准备台词 / 参照语境",
+                "hint": "仅 AI 生成准备台词时生效，会参考触发语句。",
+                "order": 22,
+            },
+            "send_extension_comment": {
+                "label": "发送延伸评论",
+                "hint": "关闭后不会发送延伸评论，下方延伸评论相关选项不生效。",
+                "order": 40,
+            },
+            "ai_extension_comment": {
+                "label": "延伸评论 / AI 生成",
+                "hint": "关闭时使用固定延伸评论模板。",
+                "order": 41,
+            },
+            "contextual_extension_comment": {
+                "label": "延伸评论 / 参照语境",
+                "hint": "仅 AI 生成延伸评论时生效，会结合触发语句和抽牌内容。",
+                "order": 42,
+            },
+        }
+
+        for field_name, layout in field_layout.items():
+            field = fields.get(field_name)
+            if isinstance(field, dict):
+                field.update(layout)
+                field["description"] = str(layout.get("hint", ""))
+
+    def _runtime_or_create(self) -> TarotRuntime:
+        if self._runtime is None:
+            self._runtime = TarotRuntime(self)
+        return self._runtime
+
+    def _mark_memory_silent_text(self, stream_id: str, text: str) -> None:
+        clean_stream_id = str(stream_id or "").strip()
+        clean_text = self._normalize_request_text(text)
+        if not clean_stream_id or not clean_text:
+            return
+        key = (clean_stream_id, clean_text)
+        self._memory_silent_texts[key] = self._memory_silent_texts.get(key, 0) + 1
+
+    def _consume_memory_silent_text(self, stream_id: str, text: str) -> bool:
+        key = (str(stream_id or "").strip(), self._normalize_request_text(text))
+        count = self._memory_silent_texts.get(key, 0)
+        if count <= 0:
+            return False
+        if count == 1:
+            self._memory_silent_texts.pop(key, None)
+        else:
+            self._memory_silent_texts[key] = count - 1
+        return True
+
+    @HookHandler(
+        "send_service.before_send",
+        name="tarots_memory_silent_sender",
+        description="清空塔罗插件文字消息的 processed_plain_text，避免触发长期记忆人物事实写回",
+        mode=HookMode.BLOCKING,
+        order=HookOrder.EARLY,
+        timeout_ms=3000,
+        error_policy=ErrorPolicy.SKIP,
+    )
+    async def handle_tarots_before_send(
+        self,
+        message: dict | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any] | None:
+        del kwargs
+        if not isinstance(message, dict):
+            return None
+        stream_id = str(message.get("session_id") or "").strip()
+        text = self._extract_message_text(message)
+        if not self._consume_memory_silent_text(stream_id, text):
+            return None
+
+        modified_message = dict(message)
+        modified_message["processed_plain_text"] = ""
+        return {"modified_kwargs": {"message": modified_message}}
+
+    def _spawn_background_task(self, coro: Any, label: str, timeout: float = 120.0) -> asyncio.Task[Any]:
+        async def _runner() -> None:
+            try:
+                await asyncio.wait_for(coro, timeout=timeout)
+            except asyncio.CancelledError:
+                raise
+            except asyncio.TimeoutError:
+                self.ctx.logger.warning("[%s] 后台任务超时 %.1fs，已取消", label, timeout)
+            except Exception:
+                self.ctx.logger.exception("[%s] 后台任务异常", label)
+
+        task = asyncio.create_task(_runner())
+        self._pending_tasks.add(task)
+        task.add_done_callback(self._pending_tasks.discard)
+        return task
+
+    @HookHandler(
+        "chat.receive.before_process",
+        name="tarots_before_process_handler",
+        description="拦截自然语言塔罗占卜请求并由插件后台执行，避免进入普通回复链路",
+        mode=HookMode.BLOCKING,
+        order=HookOrder.EARLY,
+        timeout_ms=3000,
+        error_policy=ErrorPolicy.SKIP,
+    )
+    async def handle_tarots_before_process(
+        self,
+        message: dict | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any] | None:
+        del kwargs
+        if not self.config.plugin.enabled or not self.config.components.enable_tarots:
+            return None
+        if not isinstance(message, dict) or bool(message.get("is_command")):
+            return None
+
+        request_text = self._normalize_request_text(self._extract_message_text(message))
+        if not self._is_tarot_divination_request(request_text, self.config.components.natural_trigger_mode):
+            return None
+
+        stream_id = str(message.get("session_id") or "").strip()
+        if not stream_id:
+            return None
+
+        self._spawn_background_task(
+            self._execute_intercepted_tarots(message, stream_id, request_text),
+            "tarots_intercept",
+        )
+        return {"action": "abort"}
+
+    async def _execute_intercepted_tarots(self, message: dict, stream_id: str, request_text: str) -> None:
+        card_type, formation = self._parse_natural_request_options(request_text)
+        target_user = self._extract_message_user_nickname(message)
+        runtime = self._runtime_or_create()
+        success, result_message = await runtime.execute(
+            stream_id,
+            card_type,
+            formation,
+            target_user,
+            request_text,
+        )
+        log_method = self.ctx.logger.info if success else self.ctx.logger.warning
+        log_method("塔罗自然语言请求已由插件拦截处理: success=%s result=%s", success, result_message)
+
+    @Action(
+        "tarots",
+        description=(
+            "进行真实的塔罗牌占卜：抽取本地塔罗牌图片，发送牌名，并生成简短解读。"
+            "用户明确要求占卜、塔罗、抽牌、算一卦、测一测时必须优先调用本动作，"
+            "不要直接用 reply 编造牌面或占卜结果。"
+        ),
+        activation_type=ActivationType.ALWAYS,
+        visibility="visible",
+        action_parameters={
+            "card_type": "抽牌范围：全部、大阿卡纳、小阿卡纳。用户没有明确要求时填全部。",
+            "formation": "牌阵：单张、圣三角、时间之流、四要素、五牌阵、吉普赛十字、马蹄、六芒星。用户没有明确要求时填单张。",
+            "target_user": "提出占卜请求的用户昵称。",
+            "user_request": "用户触发占卜的完整原话或占卜问题，例如“帮我占卜一下我今年还能瘦吗”。必须填写，用于结合语境生成准备台词和延伸评论。",
+        },
+        action_require=[
+            "当用户明确要求现在为其执行塔罗占卜、抽牌、算一卦、测一测、问牌时，必须调用本动作，不要直接 reply 生成占卜内容。",
+            "调用本动作时必须把用户原始占卜请求填入 user_request，不要留空。",
+            "用户只是询问塔罗牌知识、牌义、正逆位含义、牌阵说明、某张牌怎么解读时，不应调用本动作。",
+            "例如“圣杯7 逆位是什么意思”“恋人正位代表什么”“塔罗有哪些牌阵”这类问题都不是占卜请求，不应调用本动作。",
+            "本动作会自行发送牌面图片、牌名和简短解读，调用后不需要额外解释同一件事。",
+            "如果用户要求其它类型的占卜或普通聊天，不应调用本动作。",
+        ],
+        associated_types=["image", "text"],
+        parallel_action=False,
+        timeout_ms=120000,
+    )
+    async def handle_tarots_action(
+        self,
+        stream_id: str = "",
+        card_type: str = "全部",
+        formation: str = "单张",
+        target_user: str = "用户",
+        user_request: str = "",
+        text: str = "",
+        message: dict | None = None,
+        **kwargs: Any,
+    ) -> tuple[bool, str]:
+        del kwargs
+        if not self.config.components.enable_tarots:
+            return False, "塔罗 Action 未启用"
+        runtime = self._runtime_or_create()
+        nickname = self._normalize_display_name(self._extract_message_user_nickname(message) or target_user)
+        request_text = self._normalize_request_text(user_request or text or self._extract_message_text(message))
+        success, result_message = await runtime.execute(stream_id, card_type, formation, nickname, request_text)
+        content = (
+            f"{result_message}。插件已发送完整塔罗占卜结果；不要再调用 reply 或 send_emoji，下一步必须 no_action 或 finish，等待新消息。"
+            if success
+            else result_message
+        )
+        return {
+            "success": success,
+            "content": content,
+            "metadata": {"pause_execution": success},
+        }
+
+    @EventHandler(
+        "tarots_message_handler",
+        description="自动拦截明确的塔罗占卜请求并执行抽牌，避免普通回复直接编造牌面。",
+        event_type=EventType.ON_MESSAGE,
+        intercept_message=True,
+        weight=50,
+    )
+    async def handle_tarots_message(
+        self,
+        message: dict | None = None,
+        stream_id: str = "",
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        del kwargs
+        if not self.config.plugin.enabled or not self.config.components.enable_tarots:
+            return {"continue_processing": True}
+        if not isinstance(message, dict) or bool(message.get("is_command")):
+            return {"continue_processing": True}
+
+        request_text = self._normalize_request_text(self._extract_message_text(message))
+        if not self._is_tarot_divination_request(request_text, self.config.components.natural_trigger_mode):
+            return {"continue_processing": True}
+
+        target_stream_id = stream_id or str(message.get("session_id") or "").strip()
+        if not target_stream_id:
+            return {"continue_processing": True}
+
+        card_type, formation = self._parse_natural_request_options(request_text)
+        target_user = self._extract_message_user_nickname(message)
+        runtime = self._runtime_or_create()
+        success, result_message = await runtime.execute(
+            target_stream_id,
+            card_type,
+            formation,
+            target_user,
+            request_text,
+        )
+        return {
+            "continue_processing": False,
+            "custom_result": {
+                "success": success,
+                "message": result_message,
+            },
+        }
+
+    @Command(
+        "tarots_command",
+        description="手动触发塔罗牌占卜，用法：/塔罗、/tarot 或 /tarots [全部|大阿卡纳|小阿卡纳] [牌阵]",
+        pattern=r"^(?:/塔罗|/tarot|/tarots)(?:\s+(?P<args>.*))?\s*$",
+    )
+    async def handle_tarots_command(
+        self,
+        stream_id: str = "",
+        user_nickname: str = "",
+        user_id: str = "",
+        matched_groups: dict | None = None,
+        message: dict | None = None,
+        text: str = "",
+        **kwargs: Any,
+    ) -> tuple[bool, str, bool]:
+        del kwargs
+        if not self.config.components.enable_tarots_command:
+            return False, "塔罗命令未启用", True
+
+        args = str((matched_groups or {}).get("args") or "").strip()
+        card_type, formation = self._parse_command_args(args)
+        target_user = self._extract_message_user_nickname(message)
+        runtime = self._runtime_or_create()
+        success, result_message = await runtime.execute(stream_id, card_type, formation, target_user, text or args)
+        return success, result_message, True
+
+    def _extract_message_text(self, message: dict | None) -> str:
+        if not isinstance(message, dict):
+            return ""
+        for key in ("processed_plain_text", "plain_text", "text"):
+            value = message.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+        raw_message = message.get("raw_message")
+        if isinstance(raw_message, list):
+            parts: list[str] = []
+            for item in raw_message:
+                if not isinstance(item, dict):
+                    continue
+                data = item.get("data")
+                if item.get("type") == "text" and isinstance(data, str):
+                    parts.append(data)
+                elif item.get("type") == "text" and isinstance(data, dict):
+                    text_value = data.get("text") or data.get("content")
+                    if isinstance(text_value, str):
+                        parts.append(text_value)
+            return "".join(parts)
+        return ""
+
+    def _normalize_request_text(self, text: str) -> str:
+        return re.sub(r"\s+", " ", str(text or "")).strip()
+
+    def _is_tarot_divination_request(self, text: str, mode: str = "平衡") -> bool:
+        if not text:
+            return False
+        if TAROT_KNOWLEDGE_PATTERN.search(text) and not TAROT_REQUEST_PATTERN.search(text):
+            return False
+
+        normalized_mode = mode if mode in NATURAL_TRIGGER_MODES else "平衡"
+        if normalized_mode == "严格":
+            return bool(TAROT_REQUEST_PATTERN.search(text))
+        if normalized_mode == "宽松":
+            return bool(
+                TAROT_REQUEST_PATTERN.search(text)
+                or TAROT_TOPIC_PATTERN.search(text)
+                or (LOOSE_REQUEST_PATTERN.search(text) and LOOSE_TOPIC_PATTERN.search(text))
+            )
+        return bool(TAROT_REQUEST_PATTERN.search(text) or TAROT_TOPIC_PATTERN.search(text))
+
+    def _parse_natural_request_options(self, text: str) -> tuple[str, str]:
+        card_type = "全部"
+        for alias, mapped in CARD_TYPE_ALIASES.items():
+            if alias and alias in text:
+                card_type = mapped
+                break
+
+        formation = "单张"
+        for alias, mapped in FORMATION_ALIASES.items():
+            if alias and alias in text:
+                formation = mapped
+                break
+        return card_type, formation
+
+    def _extract_message_user_nickname(self, message: dict | None) -> str:
+        if not isinstance(message, dict):
+            return ""
+
+        message_info = message.get("message_info") or {}
+        if not isinstance(message_info, dict):
+            message_info = {}
+        user_info = message_info.get("user_info") or message.get("user_info") or {}
+        if not isinstance(user_info, dict):
+            user_info = {}
+
+        key_groups = {
+            "QQ昵称": (
+                (user_info, "user_nickname"),
+                (user_info, "nickname"),
+                (user_info, "name"),
+                (message, "user_nickname"),
+                (message, "nickname"),
+                (message, "sender_nickname"),
+                (user_info, "user_cardname"),
+                (message, "user_cardname"),
+            ),
+            "qq_nickname": (
+                (user_info, "user_nickname"),
+                (user_info, "nickname"),
+                (user_info, "name"),
+                (message, "user_nickname"),
+                (message, "nickname"),
+                (message, "sender_nickname"),
+                (user_info, "user_cardname"),
+                (message, "user_cardname"),
+            ),
+            "群名片": (
+                (user_info, "user_cardname"),
+                (message, "user_cardname"),
+                (user_info, "user_nickname"),
+                (user_info, "nickname"),
+                (user_info, "name"),
+                (message, "user_nickname"),
+                (message, "nickname"),
+                (message, "sender_nickname"),
+            ),
+            "group_card": (
+                (user_info, "user_cardname"),
+                (message, "user_cardname"),
+                (user_info, "user_nickname"),
+                (user_info, "nickname"),
+                (user_info, "name"),
+                (message, "user_nickname"),
+                (message, "nickname"),
+                (message, "sender_nickname"),
+            ),
+        }
+        nickname_source = str(self.config.adjustment.nickname_source).strip()
+        if nickname_source not in key_groups:
+            self.ctx.logger.error("未知称呼来源配置: %s，可选 QQ昵称 或 群名片", nickname_source)
+            return ""
+
+        for source, key in key_groups[nickname_source]:
+            value = str(source.get(key) or "").strip()
+            if value and not QQ_ID_PATTERN.fullmatch(value):
+                return value
+
+        return ""
+
+    def _parse_command_args(self, args: str) -> tuple[str, str]:
+        card_type = "全部"
+        formation = "单张"
+        for part in [item.strip() for item in args.split() if item.strip()]:
+            mapped_card_type = CARD_TYPE_ALIASES.get(part)
+            if mapped_card_type:
+                card_type = mapped_card_type
+                continue
+            mapped_formation = FORMATION_ALIASES.get(part)
+            if mapped_formation:
+                formation = mapped_formation
+        return card_type, formation
+
+
+def create_plugin() -> TarotsPlugin:
+    return TarotsPlugin()

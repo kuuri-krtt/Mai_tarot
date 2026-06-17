@@ -1,19 +1,46 @@
 {
-  "manifest_version": 1,
-  "name": "塔罗牌插件(0.10.3复活版)",
-  "version": "4.1.0",
-  "description": "提供高版本塔罗牌占卜功能，牌面为BiliBili幻星集",
+  "manifest_version": 2,
+  "id": "kuuri-krtt.mai_tarot",
+  "version": "1.0.1",
+  "name": "麦麦塔罗",
+  "description": "提供本地塔罗占卜功能，支持多种牌阵、牌面图片发送、AI 解读和语境化延伸评论。",
   "author": {
-    "name": "KArabella",
-    "url": "https://github.com/Kristen23557"
+    "name": "kuuri-krtt",
+    "url": "https://github.com/kuuri-krtt"
   },
   "license": "AGPL-v3.0",
-  "host_application": {
-    "min_version": "0.10.0"
+  "urls": {
+    "repository": "https://github.com/kuuri-krtt/mai_tarot/",
+    "homepage": "https://github.com/kuuri-krtt/mai_tarot/",
+    "documentation": "https://github.com/kuuri-krtt/mai_tarot/#readme",
+    "issues": "https://github.com/kuuri-krtt/mai_tarot/issues"
   },
-  "keywords": ["tarot", "divination","moderation","bilibili"],
-  "categories": ["Entertainment & Interaction"],
-  "repository_url": "https://github.com/Kristen23557/MaiBot-Tarots-Plugin-REBORN/",
-  "default_locale": "zh-CN",
-  "locales_path": "_locales"
+  "host_application": {
+    "min_version": "1.0.5",
+    "max_version": "1.99.99"
+  },
+  "sdk": {
+    "min_version": "2.5.2",
+    "max_version": "2.99.99"
+  },
+  "dependencies": [],
+  "capabilities": [
+    "send.text",
+    "send.image",
+    "llm.generate"
+  ],
+  "i18n": {
+    "default_locale": "zh-CN",
+    "supported_locales": [
+      "zh-CN"
+    ]
+  },
+  "plugin_type": "extension",
+  "display": {
+    "icon": {
+      "type": "local",
+      "value": "./icon.png",
+      "fallback": "puzzle"
+    }
+  }
 }

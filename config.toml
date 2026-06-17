@@ -1,31 +1,32 @@
-# tarots_plugin - 配置文件
-# 提供高版本塔罗牌占卜功能，牌面为BiliBili幻星集
-# 配置版本: 4.1.0
-
-# 插件基本配置
 [plugin]
-
-# 配置文件版本
-config_version = "4.1.0"
-
-# 是否启用插件
+config_version = "1.2.0"
 enabled = true
 
-
-# 组件启用控制
 [components]
-
-# 启用塔罗牌占卜功能
 enable_tarots = true
+enable_tarots_command = true
+natural_trigger_mode = "宽松"
 
-
-# 牌组配置
 [cards]
+using_cards = "classic"
 
-# 当前使用牌组
-using_cards = "bilibili"
-
-# 可用牌组列表
-use_cards = ["bilibili"]
-
+[adjustment]
+send_card_names = true
+send_interpretation = true
+ai_interpretation = true
+send_preface = true
+ai_preface = true
+contextual_preface = true
+send_extension_comment = true
+ai_extension_comment = true
+contextual_extension_comment = true
+delay_preface_seconds = 2.0
+delay_image_seconds = 2.0
+delay_text_seconds = 2.0
+delay_extension_seconds = 1.0
+delay_error_seconds = 1.0
+preface_text = "好的，我这就抽一张牌。"
+extension_comment_text = "先把这句记心里，放松身心。"
+llm_model = "replyer"
+nickname_source = "QQ昵称"
 
