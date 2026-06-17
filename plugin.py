@@ -695,6 +695,7 @@ class TarotsPlugin(MaiBotPlugin):
         if to_cancel:
             await asyncio.gather(*to_cancel, return_exceptions=True)
         self._pending_tasks.clear()
+        self._memory_silent_texts.clear()
         self.ctx.logger.info("麦麦塔罗插件已卸载")
 
     async def on_config_update(self, scope: str, config_data: dict, version: str) -> None:
