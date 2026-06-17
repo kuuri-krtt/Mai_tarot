@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, ClassVar
 
-from maibot_sdk import Action, Command, EventHandler, Field, HookHandler, MaiBotPlugin, PluginConfigBase
-from maibot_sdk.types import ActivationType, ErrorPolicy, EventType, HookMode, HookOrder
+from maibot_sdk import Command, EventHandler, Field, HookHandler, MaiBotPlugin, PluginConfigBase, Tool
+from maibot_sdk.types import ErrorPolicy, EventType, HookMode, HookOrder, ToolParameterInfo, ToolParamType
 
 import asyncio
 import base64
@@ -954,34 +954,63 @@ class TarotsPlugin(MaiBotPlugin):
         log_method = self.ctx.logger.info if success else self.ctx.logger.warning
         log_method("塔罗自然语言请求已由插件拦截处理: success=%s result=%s", success, result_message)
 
-    @Action(
+    @Tool(
         "tarots",
         description=(
             "进行真实的塔罗牌占卜：抽取本地塔罗牌图片，发送牌名，并生成简短解读。"
-            "用户明确要求占卜、塔罗、抽牌、算一卦、测一测时必须优先调用本动作，"
+            "当用户明确要求现在为其执行塔罗占卜、抽牌、算一卦、测一测、问牌时使用；"
             "不要直接用 reply 编造牌面或占卜结果。"
+            "调用时必须填写 stream_id 和 user_request。"
+            "用户只是询问塔罗牌知识、牌义、正逆位含义、牌阵说明、某张牌怎么解读时，不应调用本工具。"
+            "例如“圣杯7 逆位是什么意思”“恋人正位代表什么”“塔罗有哪些牌阵”这类问题都不是占卜请求。"
+            "本工具会自行发送牌面图片、牌名和简短解读，调用后不需要额外解释同一件事。"
+            "如果用户要求其它类型的占卜或普通聊天，不应调用本工具。"
         ),
-        activation_type=ActivationType.ALWAYS,
-        visibility="visible",
-        action_parameters={
-            "card_type": "抽牌范围：全部、大阿卡纳、小阿卡纳。用户没有明确要求时填全部。",
-            "formation": "牌阵：单张、圣三角、时间之流、四要素、五牌阵、吉普赛十字、马蹄、六芒星。用户没有明确要求时填单张。",
-            "target_user": "提出占卜请求的用户昵称。",
-            "user_request": "用户触发占卜的完整原话或占卜问题，例如“帮我占卜一下我今年还能瘦吗”。必须填写，用于结合语境生成准备台词和延伸评论。",
-        },
-        action_require=[
-            "当用户明确要求现在为其执行塔罗占卜、抽牌、算一卦、测一测、问牌时，必须调用本动作，不要直接 reply 生成占卜内容。",
-            "调用本动作时必须把用户原始占卜请求填入 user_request，不要留空。",
-            "用户只是询问塔罗牌知识、牌义、正逆位含义、牌阵说明、某张牌怎么解读时，不应调用本动作。",
-            "例如“圣杯7 逆位是什么意思”“恋人正位代表什么”“塔罗有哪些牌阵”这类问题都不是占卜请求，不应调用本动作。",
-            "本动作会自行发送牌面图片、牌名和简短解读，调用后不需要额外解释同一件事。",
-            "如果用户要求其它类型的占卜或普通聊天，不应调用本动作。",
+        parameters=[
+            ToolParameterInfo(
+                name="stream_id",
+                param_type=ToolParamType.STRING,
+                description="当前聊天流 ID，必须填写。",
+                required=True,
+            ),
+            ToolParameterInfo(
+                name="card_type",
+                param_type=ToolParamType.STRING,
+                description="抽牌范围，可选：全部、大阿卡纳、小阿卡纳。用户没有明确要求时填全部。",
+                required=False,
+                default="全部",
+            ),
+            ToolParameterInfo(
+                name="formation",
+                param_type=ToolParamType.STRING,
+                description="牌阵，可选：单张、圣三角、时间之流、四要素、五牌阵、吉普赛十字、马蹄、六芒星。用户没有明确要求时填单张。",
+                required=False,
+                default="单张",
+            ),
+            ToolParameterInfo(
+                name="target_user",
+                param_type=ToolParamType.STRING,
+                description="提出占卜请求的用户昵称。",
+                required=False,
+                default="用户",
+            ),
+            ToolParameterInfo(
+                name="user_request",
+                param_type=ToolParamType.STRING,
+                description="用户触发占卜的完整原话或占卜问题，例如“帮我占卜一下我今年还能瘦吗”。必须填写。",
+                required=True,
+            ),
+            ToolParameterInfo(
+                name="text",
+                param_type=ToolParamType.STRING,
+                description="兼容字段：用户消息文本。优先使用 user_request；没有 user_request 时才使用此字段。",
+                required=False,
+                default="",
+            ),
         ],
-        associated_types=["image", "text"],
-        parallel_action=False,
         timeout_ms=120000,
     )
-    async def handle_tarots_action(
+    async def handle_tarots_tool(
         self,
         stream_id: str = "",
         card_type: str = "全部",
@@ -991,10 +1020,10 @@ class TarotsPlugin(MaiBotPlugin):
         text: str = "",
         message: dict | None = None,
         **kwargs: Any,
-    ) -> tuple[bool, str]:
+    ) -> dict[str, Any]:
         del kwargs
         if not self.config.components.enable_tarots:
-            return False, "塔罗 Action 未启用"
+            return {"success": False, "content": "塔罗工具未启用"}
         runtime = self._runtime_or_create()
         nickname = self._normalize_display_name(self._extract_message_user_nickname(message) or target_user)
         request_text = self._normalize_request_text(user_request or text or self._extract_message_text(message))

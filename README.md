@@ -9,8 +9,8 @@
 - 多牌阵支持：支持单张、圣三角、时间之流、四要素、五牌阵、吉普赛十字、马蹄、六芒星。
 - 抽牌范围支持：支持全部、大阿卡纳、小阿卡纳。
 - 本地牌组抽牌：从 `tarot_jsons/<牌组名>/tarots.json` 和同目录牌面图片读取牌组，不依赖远程图片下载。
-- 多入口触发：支持自然语言拦截、Planner Action 调用和手动命令；适配 `tarots` Action，让模型在需要占卜时走真实抽牌流程。
-- AI 输出可控：准备台词、牌义解读、延伸评论均可选择 AI 生成或使用本地模板/牌义文本。AI会结合主程序设置的表达风格生成回复。
+- 多入口触发：支持自然语言拦截、Planner Tool 调用和手动命令；适配 `tarots` Tool，让模型在需要占卜时走真实抽牌流程。
+- AI 输出可控：准备台词、牌义解读、延伸评论均可选择 AI 生成或使用本地模板/牌义文本。AI 会按插件内置的塔罗回复风格生成回复。
 - 语境化回复：AI 准备台词和延伸评论可参考用户原始占卜问题。
 - WebUI 配置：插件开关、触发模式、当前牌组、输出内容、延迟和称呼来源都可配置。
 - 防误触知识问答：询问“某张牌是什么意思”“牌阵有哪些”等知识问题时，不主动执行占卜。
@@ -19,7 +19,7 @@
 
 ## 现版本主要改动
 
-- 适配新版 MaiBot 插件运行时，使用 `MaiBotPlugin`、`Action`、`Command`、`EventHandler` 和 `HookHandler` 组织插件能力。
+- 适配新版 MaiBot 插件运行时，使用 `MaiBotPlugin`、`Tool`、`Command`、`EventHandler` 和 `HookHandler` 组织插件能力。
 - 重构为本地牌组模式，启动时扫描 `tarot_jsons` 下包含 `tarots.json` 的牌组。
 - 默认优先使用 `classic` 牌组，未配置或配置不可用时自动选择第一个可用本地牌组。
 - 新增自然语言触发模式：严格、平衡、宽松。
@@ -88,7 +88,7 @@
 关键配置：
 
 - `enabled`：是否启用插件。
-- `enable_tarots`：是否启用自然语言触发和 Action 触发。
+- `enable_tarots`：是否启用自然语言触发和 Tool 触发。
 - `enable_tarots_command`：是否启用 `/塔罗`、`/tarot`、`/tarots` 命令。
 - `natural_trigger_mode`：自然语言触发强度，可选 `严格`、`平衡`、`宽松`。
 - `using_cards`：当前牌组目录名，必须是 `tarot_jsons` 下包含 `tarots.json` 的目录。
