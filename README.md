@@ -30,6 +30,19 @@
 - 新增称呼来源配置，可优先使用 QQ 昵称或群名片。
 - 移除旧版远程牌面下载、代理下载、一键缓存、切换牌组命令等路径；当前以本地牌组文件为准。
 
+## 安装与启用
+
+推荐通过 MaiBot 插件市场安装并启用本插件。插件市场会负责下载插件包并放置到正确目录，启用后可在 WebUI 中调整配置。
+
+如果需要手动安装，可以将本仓库目录放入 MaiBot 的 `plugins/mai_tarot` 目录下，目录内应直接包含 `plugin.py`、`_manifest.json`、`config.toml` 和 `tarot_jsons`。放置完成后重启 MaiBot，或按当前运行环境支持的方式重新加载插件。
+
+启用后建议先确认以下配置：
+
+- `enabled` 为 `true`，用于启用插件整体功能。
+- `enable_tarots` 为 `true`，用于启用自然语言拦截和 `tarots` Tool。
+- `enable_tarots_command` 为 `true`，用于启用 `/塔罗`、`/tarot`、`/tarots` 命令。
+- `using_cards` 指向存在的本地牌组目录，默认使用 `classic`。
+
 ## 使用方式
 
 ### 自然语言
@@ -138,6 +151,27 @@ tarot_jsons/
 > Based on the public-domain Rider-Waite-Smith Tarot illustrations by Pamela Colman Smith, first published 1909/1910.
 
 这些 Rider-Waite-Smith 公开领域素材可用于开源项目，classic 牌库包含大阿卡纳与小阿卡纳。默认不再附带 bilibili 卡组；如需使用其它牌组，请自行添加到 `tarot_jsons` 并在配置中切换 `using_cards`。
+
+## 常见问题
+
+### 为什么塔罗请求有时会被普通 reply 抢答？
+
+插件已经尽量避免普通回复链路直接编造牌面，但不能承诺 100% 阻止所有误触发。
+
+当前有两层处理：
+
+- 明确的塔罗请求会先被自然语言 Hook 拦截，例如“塔罗占卜”“抽一张牌”“算一卦”“测测”“问牌”等。命中后插件会后台执行真实抽牌，并中止普通回复链路。
+- 没被 Hook 命中的请求会进入 Planner 判断，模型可以调用 `tarots` Tool 执行真实抽牌。`tarots` Tool 的描述中已经明确要求不要直接用 reply 编造牌面。
+
+残留风险主要来自表达过于隐晦、自然语言触发模式过严，或主程序 Tool 调度后仍继续生成普通回复。遇到这种情况可以把 `natural_trigger_mode` 调整为 `宽松`，或者使用 `/塔罗` 命令明确触发。
+
+### 询问牌义会触发占卜吗？
+
+一般不会。插件会尽量识别“某张牌是什么意思”“牌阵有哪些”“正逆位含义是什么”等知识类问题，这类问题不主动执行占卜。
+
+### 为什么提示没有可用牌组？
+
+请确认 `tarot_jsons/<牌组名>/tarots.json` 存在，并且 `config.toml` 中的 `using_cards` 与牌组目录名一致。默认牌组为 `classic`。
 
 ## 兼容性
 
