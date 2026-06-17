@@ -1,6 +1,6 @@
 {
   "manifest_version": 2,
-  "id": "kuuri-krtt.mai_tarot",
+  "id": "kuuri-krtt.mai_tarots",
   "version": "1.0.1",
   "name": "麦麦塔罗",
   "description": "提供本地塔罗占卜功能，支持多种牌阵、牌面图片发送、AI 解读和语境化延伸评论。",
@@ -10,10 +10,10 @@
   },
   "license": "AGPL-v3.0",
   "urls": {
-    "repository": "https://github.com/kuuri-krtt/mai_tarot/",
-    "homepage": "https://github.com/kuuri-krtt/mai_tarot/",
-    "documentation": "https://github.com/kuuri-krtt/mai_tarot/#readme",
-    "issues": "https://github.com/kuuri-krtt/mai_tarot/issues"
+    "repository": "https://github.com/kuuri-krtt/Mai_tarots/",
+    "homepage": "https://github.com/kuuri-krtt/Mai_tarots/",
+    "documentation": "https://github.com/kuuri-krtt/Mai_tarots/#readme",
+    "issues": "https://github.com/kuuri-krtt/Mai_tarots/issues"
   },
   "host_application": {
     "min_version": "1.0.5",
