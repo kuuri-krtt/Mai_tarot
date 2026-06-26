@@ -5,12 +5,13 @@ enabled = true
 [components]
 enable_tarots = true
 enable_tarots_command = true
-natural_trigger_mode = "宽松"
+natural_trigger_mode = "平衡"
 
 [cards]
 using_cards = "classic"
 
 [adjustment]
+follow_bot_persona = true
 send_card_names = true
 send_interpretation = true
 ai_interpretation = true
@@ -29,4 +30,10 @@ preface_text = "好的，我这就抽一张牌。"
 extension_comment_text = "先把这句记心里，放松身心。"
 llm_model = "replyer"
 nickname_source = "QQ昵称"
+interpretation_prompt = "{bot_style_context}\n\n请{target_text}，保持非常简短（2-3句话）。\n\n牌阵：{formation}\n抽到的牌：{cards_info}\n\n请用1句话总结牌面意思，再用1句话给出实用建议。不要用专业术语，不要讲大道理。\n你的解读（50字以内）："
+preface_prompt = "{bot_style_context}\n\n请生成一句占卜前的准备台词。\n要求：只输出一句话，10-30字，不透露具体牌面。\n如果没有用户昵称，就用“好的”“知道了”“明白了”这类无称呼开头。\n\n{user_line}\n抽牌范围：{card_type}\n牌阵：{formation}\n{context_line}\n\n准备台词："
+extension_comment_prompt = "{bot_style_context}\n\n请生成一句占卜后的延伸评论。\n要求：只输出一句话，字数不限，不复述牌面。\n如果没有用户昵称，就不要称呼用户。\n\n{user_line}\n牌阵：{formation}\n{context_text}\n上文解读：{interpretation}\n\n延伸评论："
+ai_failure_notice = true
+failure_notice_text = "我不小心把牌弄洒了，还在整理，稍后再来找我吧。"
+failure_notice_prompt = "{bot_style_context}\n\n塔罗占卜没有完成。请生成一句对用户发送的失败提示。\n要求：只输出一句话，使用与本次用户请求相同的语言，长度简短。\n请给出符合塔罗场景的生活化理由，例如不小心把牌弄洒了、牌找不到了。\n不要编造抽到的牌面，不要解释技术原因。\n不要表达你会自动重试、稍后主动继续或整理好后自行返回结果。\n\n失败提示："
 

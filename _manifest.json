@@ -27,7 +27,9 @@
   "capabilities": [
     "send.text",
     "send.image",
-    "llm.generate"
+    "llm.generate",
+    "llm.get_available_models",
+    "config.get"
   ],
   "i18n": {
     "default_locale": "zh-CN",
