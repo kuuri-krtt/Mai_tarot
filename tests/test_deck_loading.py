@@ -35,6 +35,7 @@ class DeckLoadingTests(unittest.IsolatedAsyncioTestCase):
         self.plugin = object.__new__(TarotsPlugin)
         self.plugin._ctx = SimpleNamespace(
             logger=SimpleNamespace(
+                debug=MagicMock(),
                 info=MagicMock(),
                 warning=MagicMock(),
                 error=MagicMock(),

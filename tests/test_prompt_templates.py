@@ -124,7 +124,8 @@ class BotPersonaContextTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(context.startswith(TarotRuntime._build_bot_style_context()))
         self.assertIn("未取得用户原始请求", context)
-        self.plugin.ctx.logger.debug.assert_called_once()
+        self.assertGreaterEqual(self.plugin.ctx.logger.debug.call_count, 1)
+        self.plugin.ctx.logger.warning.assert_not_called()
 
     async def test_persona_context_is_cached(self) -> None:
         values = {
@@ -190,7 +191,8 @@ class BotPersonaContextTests(unittest.IsolatedAsyncioTestCase):
         context = await self.runtime._build_ai_style_context()
 
         self.assertIn("表达风格：说话简短。", context)
-        self.plugin.ctx.logger.warning.assert_called_once()
+        self.assertGreaterEqual(self.plugin.ctx.logger.debug.call_count, 1)
+        self.plugin.ctx.logger.warning.assert_not_called()
 
     async def test_llm_receives_persona_as_system_message(self) -> None:
         self.plugin._plugin_config_instance = SimpleNamespace(

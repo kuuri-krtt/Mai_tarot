@@ -438,7 +438,7 @@ class TarotRuntime:
                     image_dir=TAROT_DIR / name,
                 )
             except Exception as exc:
-                self.plugin.ctx.logger.error("牌组 %s 校验失败，已跳过: %s", name, exc)
+                self.plugin.ctx.logger.warning("牌组 %s 校验失败，已跳过: %s", name, exc)
                 continue
             if selected_cards is None:
                 selected_name = name
@@ -471,7 +471,7 @@ class TarotRuntime:
         self.card_pools = pools
         self.native_arcana = native_arcana
         self.formation_map = validated_formations
-        self.plugin.ctx.logger.info(
+        self.plugin.ctx.logger.debug(
             "塔罗牌组已加载: cards=%s total=%s auto=%s major=%s minor=%s formations=%s",
             self.using_cards,
             len(self.card_map),
@@ -1028,7 +1028,7 @@ class TarotRuntime:
         nickname, aliases, personality, reply_style = values
 
         if failed_keys:
-            self.plugin.ctx.logger.warning(
+            self.plugin.ctx.logger.debug(
                 "塔罗插件读取部分 MaiBot 人设配置失败: %s",
                 ", ".join(failed_keys),
             )
@@ -1065,14 +1065,14 @@ class TarotRuntime:
         if reply_style_text:
             self._host_persona_cached_at = now
             persona_lines.append(f"表达风格：{self._host_reply_style}")
-            self.plugin.ctx.logger.info(
+            self.plugin.ctx.logger.debug(
                 "塔罗 AI 已读取 MaiBot 表达风格: chars=%s preview=%s",
                 len(self._host_reply_style),
                 self._host_reply_style[:80].replace("\n", " "),
             )
         else:
             self._host_persona_cached_at = 0.0
-            self.plugin.ctx.logger.warning("塔罗 AI 未读取到 personality.reply_style，将无法执行宿主风格渲染")
+            self.plugin.ctx.logger.debug("塔罗 AI 未读取到 personality.reply_style，将无法执行宿主风格渲染")
 
         if len(persona_lines) == 2:
             self._host_persona_context = ""
@@ -1203,7 +1203,7 @@ class TarotRuntime:
             )
             if styled_reply:
                 reply = styled_reply
-                self.plugin.ctx.logger.info(
+                self.plugin.ctx.logger.debug(
                     "塔罗 AI 风格重写完成: draft_chars=%s styled_chars=%s",
                     len(draft),
                     len(styled_reply),
@@ -1211,7 +1211,7 @@ class TarotRuntime:
             else:
                 self.plugin.ctx.logger.warning("塔罗 AI 风格重写失败，回退到内容草稿")
         elif system_prompt.strip():
-            self.plugin.ctx.logger.warning("塔罗 AI 本次未执行风格重写: personality.reply_style 为空")
+            self.plugin.ctx.logger.debug("塔罗 AI 本次未执行风格重写: personality.reply_style 为空")
 
         reply = self._normalize_llm_reply(reply)
         if 0 < len(reply) <= max_len:
@@ -2294,7 +2294,7 @@ class TarotsPlugin(MaiBotPlugin):
             request_text,
             message=message,
         )
-        log_method = self.ctx.logger.info if success else self.ctx.logger.warning
+        log_method = self.ctx.logger.debug if success else self.ctx.logger.warning
         log_method("塔罗自然语言请求已由插件拦截处理: success=%s result=%s", success, result_message)
 
     @Tool(
@@ -2303,19 +2303,13 @@ class TarotsPlugin(MaiBotPlugin):
             "进行真实的塔罗牌占卜：随机抽牌，在图片可用时发送牌面，并发送牌名和简短解读。"
             "当用户明确要求现在为其执行塔罗占卜、抽牌、算一卦、测一测、问牌时使用；"
             "不要直接用 reply 编造牌面或占卜结果。"
-            "调用时必须填写 stream_id 和 user_request。"
+            "调用时必须填写 user_request。stream_id 由 MaiBot 工具上下文自动注入，不要自行编造。"
             "用户只是询问塔罗牌知识、牌义、正逆位含义、牌阵说明、某张牌怎么解读时，不应调用本工具。"
             "例如“圣杯7 逆位是什么意思”“恋人正位代表什么”“塔罗有哪些牌阵”这类问题都不是占卜请求。"
             "本工具会自行发送牌面图片、牌名和简短解读，调用后不需要额外解释同一件事。"
             "如果用户要求其它类型的占卜或普通聊天，不应调用本工具。"
         ),
         parameters=[
-            ToolParameterInfo(
-                name="stream_id",
-                param_type=ToolParamType.STRING,
-                description="当前聊天流 ID，必须填写。",
-                required=True,
-            ),
             ToolParameterInfo(
                 name="card_type",
                 param_type=ToolParamType.STRING,
@@ -2372,11 +2366,18 @@ class TarotsPlugin(MaiBotPlugin):
         if not self.config.components.enable_tarots:
             return {"success": False, "content": "塔罗工具未启用"}
         runtime = self._runtime_or_create()
+        target_stream_id = self._extract_message_stream_id(message) or str(stream_id or "").strip()
+        if stream_id and target_stream_id and str(stream_id).strip() != target_stream_id:
+            self.ctx.logger.warning(
+                "塔罗 Tool 收到的 stream_id 与消息上下文不一致，已使用消息上下文: tool_stream_id=%s message_stream_id=%s",
+                stream_id,
+                target_stream_id,
+            )
         nickname = runtime._normalize_display_name(self._extract_message_user_nickname(message) or target_user)
         request_text = self._normalize_request_text(user_request or text or self._extract_message_text(message))
         success, result_message = await self._execute_tarot_with_cooldown(
             runtime,
-            stream_id,
+            target_stream_id,
             card_type,
             formation,
             nickname,
@@ -2578,6 +2579,24 @@ class TarotsPlugin(MaiBotPlugin):
                 formation = mapped
                 break
         return card_type, formation
+
+    def _extract_message_stream_id(self, message: dict | None) -> str:
+        if not isinstance(message, dict):
+            return ""
+
+        for key in ("session_id", "stream_id", "chat_id"):
+            value = str(message.get(key) or "").strip()
+            if value:
+                return value
+
+        message_info = message.get("message_info") or {}
+        if isinstance(message_info, dict):
+            for key in ("session_id", "stream_id", "chat_id"):
+                value = str(message_info.get(key) or "").strip()
+                if value:
+                    return value
+
+        return ""
 
     def _extract_message_user_nickname(self, message: dict | None) -> str:
         if not isinstance(message, dict):

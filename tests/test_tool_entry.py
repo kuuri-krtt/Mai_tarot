@@ -14,6 +14,13 @@ class ToolEntryTests(unittest.IsolatedAsyncioTestCase):
             components=SimpleNamespace(enable_tarots=True),
             adjustment=SimpleNamespace(nickname_source="QQ昵称"),
         )
+        self.plugin._set_context(SimpleNamespace(
+            logger=SimpleNamespace(
+                warning=lambda *args, **kwargs: None,
+                debug=lambda *args, **kwargs: None,
+                error=lambda *args, **kwargs: None,
+            )
+        ))
         self.runtime = SimpleNamespace(
             _normalize_display_name=lambda name: "" if name == "用户" else str(name).strip(),
             execute=AsyncMock(return_value=(True, "占卜完成")),
@@ -46,6 +53,16 @@ class ToolEntryTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(self.runtime.execute.await_args.args[3], "")
+
+    async def test_tool_prefers_message_session_id_over_argument_stream_id(self) -> None:
+        await self.plugin.handle_tarots_tool(
+            stream_id="chat_20260626_104345",
+            target_user="Bob",
+            user_request="draw a card",
+            message={"session_id": "real-stream"},
+        )
+
+        self.assertEqual(self.runtime.execute.await_args.args[0], "real-stream")
 
 
 if __name__ == "__main__":

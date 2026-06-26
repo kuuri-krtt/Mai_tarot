@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "id": "github.kuuri-krtt.mai_tarots",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "name": "麦麦塔罗",
   "description": "提供本地塔罗占卜功能，支持多种牌阵、牌面图片发送、AI 解读和语境化延伸评论。",
   "author": {
