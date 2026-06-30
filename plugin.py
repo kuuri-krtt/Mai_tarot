@@ -308,6 +308,16 @@ class AdjustmentConfig(PluginConfigBase):
         description="AI 生成准备台词时是否参考触发语句中的占卜要求和前文语境",
         json_schema_extra={"label": "准备台词参照语境"},
     )
+    force_name_in_preface: bool = Field(
+        default=False,
+        description="准备台词是否强制提到提问人的称呼，避免多人同时占卜时混淆",
+        json_schema_extra={"label": "准备台词强制提名"},
+    )
+    at_user_in_preface: bool = Field(
+        default=False,
+        description="非合并发送时，准备台词是否在同一条消息内直接 @ 提问人；合并转发模式下不生效",
+        json_schema_extra={"label": "准备台词 @ 提问人"},
+    )
     preface_prompt: str = Field(
         default=DEFAULT_PREFACE_PROMPT,
         description="AI 准备台词提示词，可用 {bot_style_context} {user_line} {card_type} {formation} {context_line}",
@@ -356,7 +366,7 @@ class AdjustmentConfig(PluginConfigBase):
         json_schema_extra={"label": "准备台词模板"},
     )
     extension_comment_text: str = Field(
-        default="先把这句记心里，慢慢来就好。",
+        default="牌已经给了一个方向，接下来照着心里最清楚的那一步走就好。",
         description="延伸评论模板，可用 {user} {formation}",
         json_schema_extra={"label": "延伸评论模板"},
     )
@@ -682,6 +692,8 @@ class TarotRuntime:
         formation: str = "单张",
         target_user: str = "",
         user_request: str = "",
+        preface_at_user_id: str = "",
+        preface_at_user_name: str = "",
     ) -> tuple[bool, str]:
         """按聊天流串行执行一次完整塔罗占卜。"""
 
@@ -696,6 +708,8 @@ class TarotRuntime:
                 formation,
                 target_user,
                 user_request,
+                preface_at_user_id,
+                preface_at_user_name,
             )
         finally:
             self.plugin._release_stream_execution_lock(stream_id, stream_lock)
@@ -707,6 +721,8 @@ class TarotRuntime:
         formation: str = "单张",
         target_user: str = "",
         user_request: str = "",
+        preface_at_user_id: str = "",
+        preface_at_user_name: str = "",
     ) -> tuple[bool, str]:
         """执行已取得聊天流锁的一次塔罗占卜。"""
 
@@ -741,9 +757,16 @@ class TarotRuntime:
             preface = await self._build_preface(target_user, card_type_label, formation, user_request)
             if preface:
                 if use_forward:
+                    preface = self._apply_preface_user_name(preface, target_user)
                     forward_messages.append(self._make_forward_node("text", preface))
                 else:
-                    if not await self._send_after_delay("preface", preface, stream_id):
+                    if not await self._send_preface_after_delay(
+                        preface,
+                        stream_id,
+                        target_user,
+                        preface_at_user_id,
+                        preface_at_user_name,
+                    ):
                         return False, "准备台词发送失败"
                     await asyncio.sleep(0.4)
 
@@ -934,6 +957,78 @@ class TarotRuntime:
             return False
         return True
 
+    async def _send_preface_after_delay(
+        self,
+        preface: str,
+        stream_id: str,
+        user_name: str,
+        at_user_id: str,
+        at_user_name: str,
+    ) -> bool:
+        cfg = self.plugin.config.adjustment
+        if not bool(getattr(cfg, "at_user_in_preface", False)) or not str(at_user_id or "").strip():
+            preface = self._apply_preface_user_name(preface, user_name)
+            return await self._send_after_delay("preface", preface, stream_id)
+
+        await self._delay_before_send("preface")
+        segments, plain_text = self._build_preface_at_segments(preface, user_name, at_user_id, at_user_name)
+        self.plugin._mark_memory_silent_text(stream_id, plain_text)
+        try:
+            sent = await self.plugin.ctx.send.hybrid(
+                segments,
+                stream_id,
+                processed_plain_text=plain_text,
+            )
+        except Exception as exc:
+            self.plugin._unmark_memory_silent_text(stream_id, plain_text)
+            self.plugin.ctx.logger.error("塔罗准备台词 At 发送失败，回退文本发送: %s", exc, exc_info=True)
+            return await self._send_after_delay("preface", plain_text, stream_id)
+        if not sent:
+            self.plugin._unmark_memory_silent_text(stream_id, plain_text)
+            self.plugin.ctx.logger.error("塔罗准备台词 At 发送失败: send.hybrid 返回 False，回退文本发送")
+            return await self._send_after_delay("preface", plain_text, stream_id)
+        return True
+
+    def _build_preface_at_segments(
+        self,
+        preface: str,
+        user_name: str,
+        at_user_id: str,
+        at_user_name: str,
+    ) -> tuple[list[dict[str, Any]], str]:
+        preface_text = str(preface or "").strip()
+        display_name = str(at_user_name or at_user_id or "").strip()
+        text_after_at = f"，{preface_text}" if preface_text else ""
+        segments: list[dict[str, Any]] = []
+        plain_parts: list[str] = []
+
+        name_prefix = ""
+        if bool(getattr(self.plugin.config.adjustment, "force_name_in_preface", False)):
+            name_prefix = self._normalize_display_name(user_name)
+            if name_prefix and display_name and name_prefix.casefold() == display_name.casefold():
+                name_prefix = ""
+        if name_prefix:
+            segments.append({"type": "text", "content": name_prefix})
+            plain_parts.append(name_prefix)
+
+        segments.append(
+            {
+                "type": "at",
+                "data": {
+                    "target_user_id": str(at_user_id or "").strip(),
+                    "target_user_nickname": display_name or None,
+                    "target_user_cardname": None,
+                },
+            }
+        )
+        plain_parts.append(f"@{display_name}" if display_name else "@")
+
+        if text_after_at:
+            segments.append({"type": "text", "content": text_after_at})
+            plain_parts.append(text_after_at)
+
+        return segments, "".join(plain_parts)
+
     async def _delay_before_send(self, stage: str) -> None:
         cfg = self.plugin.config.adjustment
         delay_map = {
@@ -1092,7 +1187,10 @@ class TarotRuntime:
         cfg = self.plugin.config.adjustment
         template = cfg.preface_text.strip()
         if cfg.send_preface and cfg.ai_preface:
-            user_line = f"用户昵称：{user}" if user else "用户昵称：未取得，请不要称呼用户"
+            if bool(getattr(cfg, "force_name_in_preface", False)) or bool(getattr(cfg, "at_user_in_preface", False)):
+                user_line = "用户称呼：将由插件在消息开头统一处理；正文不要称呼用户，不要输出用户名、昵称或 @。"
+            else:
+                user_line = f"用户昵称：{user}" if user else "用户昵称：未取得，请不要称呼用户"
             context_line = (
                 f"用户占卜请求：{user_request}\n请自然承接这个占卜问题，但不要提前给出结果。"
                 if cfg.contextual_preface
@@ -1114,6 +1212,19 @@ class TarotRuntime:
         if not user and "{user}" in template:
             return random.choice(("好的，我这就抽一张牌。", "知道了，我来抽牌。", "明白了，我这就开始。"))
         return self._render_template(template, user=user, card_type=card_type, formation=formation)
+
+    def _apply_preface_user_name(self, preface: str, user: str) -> str:
+        preface_text = str(preface or "").strip()
+        if not preface_text or not bool(getattr(self.plugin.config.adjustment, "force_name_in_preface", False)):
+            return preface_text
+
+        user_name = self._normalize_display_name(user)
+        if not user_name:
+            return preface_text
+
+        if user_name in preface_text[: max(12, len(user_name) + 4)]:
+            return preface_text
+        return f"{user_name}，{preface_text}"
 
     async def _build_extension(
         self,
@@ -1685,16 +1796,28 @@ class TarotsPlugin(MaiBotPlugin):
                 "order": 22,
                 "group": "准备台词",
             },
+            "force_name_in_preface": {
+                "label": "准备台词 / 强制提名",
+                "hint": "开启后，准备台词会强制提到按“称呼来源”取得的提问人称呼，用于减少多人同时提问时的混淆。",
+                "order": 23,
+                "group": "准备台词",
+            },
+            "at_user_in_preface": {
+                "label": "准备台词 / @ 提问人",
+                "hint": "仅逐条发送模式生效；开启后准备台词会在同一条消息内直接 @ 提问人。与强制提名同时开启时，格式为“称呼@昵称，准备台词”。",
+                "order": 24,
+                "group": "准备台词",
+            },
             "preface_text": {
                 "label": "准备台词 / 固定模板",
                 "hint": "AI 生成关闭或失败时使用。占位符：{user} {card_type} {formation}",
-                "order": 23,
+                "order": 25,
                 "group": "准备台词",
             },
             "preface_prompt": {
                 "label": "准备台词 / AI 提示词",
                 "hint": "占位符：{bot_style_context} {user_line} {card_type} {formation} {context_line}",
-                "order": 24,
+                "order": 26,
                 "group": "准备台词",
                 "ui_type": "textarea",
                 "rows": 10,
@@ -1931,12 +2054,30 @@ class TarotsPlugin(MaiBotPlugin):
         user_id: str = "",
         platform: str = "",
     ) -> tuple[bool, str]:
+        preface_at_user_id = str(user_id or "").strip() or self._extract_message_user_id(message)
+        preface_at_user_name = self._extract_message_user_at_name(message) or target_user
         if not self._is_cooldown_enabled():
-            return await runtime.execute(stream_id, card_type, formation, target_user, request_text)
+            return await runtime.execute(
+                stream_id,
+                card_type,
+                formation,
+                target_user,
+                request_text,
+                preface_at_user_id,
+                preface_at_user_name,
+            )
 
         cooldown_key = self._build_cooldown_key(stream_id, message, user_id, platform)
         if not cooldown_key:
-            return await runtime.execute(stream_id, card_type, formation, target_user, request_text)
+            return await runtime.execute(
+                stream_id,
+                card_type,
+                formation,
+                target_user,
+                request_text,
+                preface_at_user_id,
+                preface_at_user_name,
+            )
 
         key_lock = await self._acquire_cooldown_key_lock(cooldown_key)
         try:
@@ -1955,10 +2096,18 @@ class TarotsPlugin(MaiBotPlugin):
 
             if remaining > 0:
                 notice = self._format_cooldown_notice(remaining)
-                await runtime._send_after_delay("error", notice, stream_id)
+                await self._send_text_with_stream_lock(runtime, "error", notice, stream_id)
                 return False, "塔罗占卜冷却中"
 
-            success, result_message = await runtime.execute(stream_id, card_type, formation, target_user, request_text)
+            success, result_message = await runtime.execute(
+                stream_id,
+                card_type,
+                formation,
+                target_user,
+                request_text,
+                preface_at_user_id,
+                preface_at_user_name,
+            )
             if success:
                 async with file_lock:
                     await self._ensure_cooldowns_loaded()
@@ -1977,13 +2126,12 @@ class TarotsPlugin(MaiBotPlugin):
             self.ctx.logger.warning("塔罗插件读取可用 AI 模型任务失败，使用默认选项: %s", exc)
             return
 
-        task_names = sorted(
-            {
-                str(task_name or "").strip()
-                for task_name in available
-                if str(task_name or "").strip()
-            }
-        )
+        available_task_names = {
+            str(task_name or "").strip()
+            for task_name in available
+            if str(task_name or "").strip()
+        }
+        task_names = [task_name for task_name in DEFAULT_LLM_TASK_NAMES if task_name in available_task_names]
         if task_names:
             self._available_llm_task_names = tuple(task_names)
         else:
@@ -2198,16 +2346,23 @@ class TarotsPlugin(MaiBotPlugin):
                 if generated:
                     notice = generated
 
-        self._mark_memory_silent_text(stream_id, notice)
-        try:
-            sent = await self.ctx.send.text(notice, stream_id)
-        except Exception as exc:
-            self._unmark_memory_silent_text(stream_id, notice)
-            self.ctx.logger.error("[%s] 后台失败提示发送异常: %s", label, exc, exc_info=True)
-            return
+        runtime = self._runtime_or_create()
+        sent = await self._send_text_with_stream_lock(runtime, "error", notice, stream_id)
         if not sent:
-            self._unmark_memory_silent_text(stream_id, notice)
-            self.ctx.logger.error("[%s] 后台失败提示发送失败: send.text 返回 False", label)
+            self.ctx.logger.error("[%s] 后台失败提示发送失败", label)
+
+    async def _send_text_with_stream_lock(
+        self,
+        runtime: TarotRuntime,
+        stage: str,
+        text: str,
+        stream_id: str,
+    ) -> bool:
+        stream_lock = await self._acquire_stream_execution_lock(stream_id)
+        try:
+            return await runtime._send_after_delay(stage, text, stream_id)
+        finally:
+            self._release_stream_execution_lock(stream_id, stream_lock)
 
     def _spawn_background_task(
         self,
@@ -2661,6 +2816,31 @@ class TarotsPlugin(MaiBotPlugin):
             if value and not QQ_ID_PATTERN.fullmatch(value):
                 return value
 
+        return ""
+
+    def _extract_message_user_at_name(self, message: dict | None) -> str:
+        if not isinstance(message, dict):
+            return ""
+        message_info = message.get("message_info") or {}
+        if not isinstance(message_info, dict):
+            message_info = {}
+        user_info = message_info.get("user_info") or message.get("user_info") or {}
+        if not isinstance(user_info, dict):
+            user_info = {}
+
+        for source, key in (
+            (user_info, "user_nickname"),
+            (user_info, "nickname"),
+            (user_info, "name"),
+            (message, "user_nickname"),
+            (message, "nickname"),
+            (message, "sender_nickname"),
+            (user_info, "user_cardname"),
+            (message, "user_cardname"),
+        ):
+            value = str(source.get(key) or "").strip()
+            if value and not QQ_ID_PATTERN.fullmatch(value):
+                return value
         return ""
 
     def _extract_message_user_id(self, message: dict | None) -> str:

@@ -17,6 +17,13 @@
 
 ## 版本更新
 
+### 1.1.0
+
+- 优化设置页 AI 模型任务名下拉选项，只保留适合文本生成的 `replyer`、`utils`、`planner`，避免误选嵌入、语音或视觉任务。
+- 新增准备台词强制提名和逐条发送模式下 @ 提问人选项，多人同时占卜时可更明确地区分请求对象；合并转发模式下不会发送 At。
+- 改进同一聊天流内的占卜串行发送和后台提示发送，减少多人连续触发时的消息交叉。
+- 调整准备台词和延伸评论细节：开启提名或 At 时避免 AI 重复称呼用户，并更新默认延伸评论文案。
+
 ### 1.0.5
 
 - 修复 Planner Tool 路径下模型可能自行编造 `stream_id`，导致合并转发发送到不存在聊天流的问题；现在优先使用 MaiBot 工具上下文注入的真实聊天流。
@@ -138,12 +145,14 @@ pull a card for me
 - `cooldown_enabled`：是否启用同用户同聊天流冷却；默认关闭。
 - `cooldown_seconds`：冷却秒数，默认 `3600`。
 - `cooldown_notice_text`：冷却中发送的提示文案，可用 `{minutes}` 和 `{seconds}`。
-- `llm_model`：AI 输出使用的模型任务名，WebUI 会从 MaiBot 当前提供的任务配置中生成下拉选项。
+- `llm_model`：AI 输出使用的模型任务名，WebUI 会从 MaiBot 当前提供的任务配置中筛选文本生成任务，默认只展示 `replyer`、`utils`、`planner`。
 - `nickname_source`：称呼来源，可选 `QQ昵称` 或 `群名片`。
 
 AI 相关配置：
 
 - `send_preface` / `ai_preface`：是否发送占卜前准备台词，以及是否由 AI 生成。
+- `force_name_in_preface`：准备台词是否强制提到按“称呼来源”取得的提问人称呼。
+- `at_user_in_preface`：逐条发送模式下，准备台词是否在同一条消息内直接 @ 提问人；合并转发模式下不生效。
 - `send_card_names`：是否在占卜结果中包含抽到的牌名列表。
 - `send_interpretation` / `ai_interpretation`：是否发送牌义解读，以及是否由 AI 生成。
 - `send_extension_comment` / `ai_extension_comment`：是否发送占卜后延伸评论，以及是否由 AI 生成。
@@ -246,7 +255,7 @@ tarot_jsons/
 
 - 最低麦麦版本：`1.0.5`
 - SDK：`2.5.2+`
-- 依赖能力：`send.text`、`send.image`、`send.forward`、`llm.generate`、`llm.get_available_models`、`config.get`
+- 依赖能力：`send.text`、`send.image`、`send.forward`、`send.hybrid`、`llm.generate`、`llm.get_available_models`、`config.get`
 
 ## 致谢与来源关系
 
